@@ -3,11 +3,14 @@
 #include "GameState.hpp"
 #include "Move.hpp"
 #include <cstring>
+#include <cstdlib>
 #include <thread>
 #include <cmath>
+
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
+
 __attribute__((unused)) constexpr size_t HugePage2MB = 2*1024*1024;
 constexpr size_t DefaultAlign = 4096;
 
@@ -17,6 +20,7 @@ transpositionTable::transpositionTable(size_t count):table(NULL){
 }
 
 int LOG[maxDepth+1];
+
 __attribute__((constructor(101))) void init_log_table(){
     for(int i=0; i <= maxDepth; i++){
         LOG[i] = log(i+1)*10;
@@ -74,18 +78,25 @@ int preference(const infoScore& newentry, const infoScore& oldentry, int curAge)
 void Cluster::push(infoScore& entry, int curAge){
     int bestID=0;
     int bestScore = -INT_MAX;
+
     for(int i=0; i<clusterSize; i++){
         if(entries[i].typeNode() == 3 || entries[i].hash == entry.hash){
             bestID = i;
             break;
         }
+
         int score = preference(entry, entries[i], curAge);
-        //if(entries[i].hash == entry.hash && score < 0)return; //if we already have a better entry for the same hash, do not put the new one in the cluster
+
+        //if(entries[i].hash == entry.hash && score < 0)return;
+        //if we already have a better entry for the same hash,
+        //do not put the new one in the cluster
+
         if(score > bestScore){
             bestScore = score;
             bestID = i;
         }
     }
+
     if(entries[bestID].hash != entry.hash ||
         entry.depth+2*entry.tt_pv() >= entries[bestID].depth+entries[bestID].tt_pv() ||
         entries[bestID].typeNode() == UPPERBOUND ||
@@ -97,41 +108,71 @@ void Cluster::push(infoScore& entry, int curAge){
 pair<big, residualHash> getIndex(const GameState& state, big modulo){
     __uint128_t tHash = ((__uint128_t)state.zobristHash)*modulo;
     static const int dec = 8*sizeof(residualHash);
+
     tHash >>= 64-dec;
+
     return {tHash >> dec, tHash&((1ULL << dec)-1)};
 }
 
-int transpositionTable::storedScore(int alpha, int beta, const infoScore& entry, int rootDist) const{
+int transpositionTable::storedScore(
+    int alpha,
+    int beta,
+    const infoScore& entry,
+    int rootDist
+) const{
     const int score = fromTT(entry.score, rootDist);
+
     if(entry.typeNode() == EXACT)
         return score;
+
     if(score >= beta && entry.typeNode() == LOWERBOUND)
         return score;
+
     if(score <= alpha && entry.typeNode() == UPPERBOUND)
         return score;
+
     return INVALID;
 }
 
 int16_t transpositionTable::getMove(const infoScore& entry) const{
-    return entry.bestMoveInfo; //probably a good move
+    return entry.bestMoveInfo;
 }
 
-infoScore& transpositionTable::getEntry(const GameState& state, bool& ttHit){
+infoScore& transpositionTable::getEntry(
+    const GameState& state,
+    bool& ttHit
+){
     auto [index, hash] = getIndex(state, modulo);
     return table[index].probe(hash, ttHit);
 }
 
-void transpositionTable::push(GameState& state, int score, ubyte typeNode, Move move, ubyte depth, int16_t raw_eval, bool is_pv){
-    //if(score == 0)return; //because of the repetition
+void transpositionTable::push(
+    GameState& state,
+    int score,
+    ubyte typeNode,
+    Move move,
+    ubyte depth,
+    int16_t raw_eval,
+    bool is_pv
+){
+    //if(score == 0)return;
+    //because of the repetition
+
     infoScore info;
+
     auto [index, hash] = getIndex(state, modulo);
+
     info.raw_eval = raw_eval;
     info.score = score;
     info.hash = hash;
     info.bestMoveInfo = move.moveInfo;
     info.depth = depth;
+
     info.setFlag(typeNode, age, is_pv);
-    //if(table[index].hash != info.hash && table[index].depth >= info.depth)return;
+
+    //if(table[index].hash != info.hash &&
+    //   table[index].depth >= info.depth)return;
+
     table[index].push(info, age);
 }
 
@@ -145,24 +186,38 @@ void transpositionTable::clearRange(big start, big end){
 
 void transpositionTable::clear(){
     age = 0;
+
     if(nbThreads == 1){
         clearRange(0, modulo);
-    }else{
+    }
+    else{
         thread* threads = (thread*)calloc(nbThreads, sizeof(Cluster));
+
         for(int i=0; i<nbThreads; i++){
             big start = modulo*i/nbThreads;
             big end = modulo*(i+1)/nbThreads;
-            threads[i] = thread(&transpositionTable::clearRange, this, start, end);
+
+            threads[i] = thread(
+                &transpositionTable::clearRange,
+                this,
+                start,
+                end
+            );
         }
+
         for(int i=0; i<nbThreads; i++){
             if(threads[i].joinable())
                 threads[i].join();
         }
+
         free(threads);
     }
 }
+
 void transpositionTable::reinit(size_t count){
+
     size_t size = count/sizeof(Cluster)*sizeof(Cluster);
+
     if(table){
 #ifdef _WIN32
         _aligned_free(table);
@@ -170,27 +225,49 @@ void transpositionTable::reinit(size_t count){
         free(table);
 #endif
     }
+
 #ifdef MADV_HUGEPAGE
-    const size_t alignment = size > HugePage2MB?HugePage2MB:DefaultAlign;
+    const size_t alignment =
+        size > HugePage2MB ? HugePage2MB : DefaultAlign;
 #else
     const size_t alignment = DefaultAlign;
 #endif
+
     size = ((size-1)/alignment+1)*alignment;
+
 #ifdef _WIN32
-    table = (Cluster*)(_aligned_malloc(size, alignment));
+
+    table = (Cluster*)_aligned_malloc(size, alignment);
+
+#elif defined(__ANDROID__)
+
+    void* ptr = nullptr;
+
+    if(posix_memalign(&ptr, alignment, size) != 0)
+        ptr = nullptr;
+
+    table = (Cluster*)ptr;
+
 #else
+
     table = (Cluster*)std::aligned_alloc(alignment, size);
+
 #endif
+
 #ifdef MADV_HUGEPAGE
     madvise(table, count*sizeof(Cluster), MADV_HUGEPAGE);
 #endif
+
     count = size/sizeof(Cluster);
     modulo=count;
+
     clear();
+
     place = 0;
     rewrite = 0;
     age=0;
 }
+
 void transpositionTable::aging(){
     age++;
     age &= maxAge;
@@ -198,33 +275,48 @@ void transpositionTable::aging(){
 
 int transpositionTable::hashfull(){
     int fullentries = 0;
+
     for(int i=0; i<1000; i++){
         for(int j=0; j<clusterSize; j++){
-            fullentries += table[i].entries[j].age() == age && table[i].entries[j].typeNode() != 3;
+            fullentries +=
+                table[i].entries[j].age() == age &&
+                table[i].entries[j].typeNode() != 3;
         }
     }
+
     return fullentries/clusterSize;
 }
 
-TTperft::TTperft(int alloted_mem):mem(alloted_mem/sizeof(perftMem)), modulo(alloted_mem/sizeof(perftMem)){}
+TTperft::TTperft(int alloted_mem):
+    mem(alloted_mem/sizeof(perftMem)),
+    modulo(alloted_mem/sizeof(perftMem))
+{}
+
 void TTperft::push(perftMem eval){
     int index = eval.hash%modulo;
     mem[index] = eval;
 }
+
 int TTperft::get_eval(big hash, int depth){
     int index = (hash*256+depth)%modulo;
+
     if(mem[index].depth == depth && mem[index].hash == hash)
         return mem[index].leefs;
+
     return -1;
 }
+
 void TTperft::clear(){
     mem.clear();
 }
+
 void TTperft::reinit(int count){
     count /= sizeof(perftMem);
+
     mem.resize(count);
     modulo = count;
 }
+
 void TTperft::clearMem(){
     mem = vector<perftMem>(0);
     modulo = 0;
