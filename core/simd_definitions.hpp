@@ -5,7 +5,7 @@
 #if defined(__x86_64__)
     #include <immintrin.h>
 
-#elif defined(__ARM_NEON__)
+#elif defined(__ARM_NEON)
     #include <arm_neon.h>
     // Make sure no x86 features are on
     #undef __AVX512F__
@@ -31,7 +31,7 @@
     using simdhalf = int64_t;
     #define MM _mm
     #define SIZE 128
-#elif defined(__ARM_NEON__)
+#elif defined(__ARM_NEON)
     // NEON behaves a bit differently than x86 simd
     using simdhalf = int8x8_t;
     #define SIZE 128
@@ -45,7 +45,7 @@
 #endif
 
 
-#ifdef __ARM_NEON__
+#ifdef __ARM_NEON
     // On NEON each width maps to its own register type so we have to do everything explicitly
     template<int size> struct simd_register;
     template<> struct simd_register<8>  { using type = int8x16_t; };
@@ -70,7 +70,7 @@ constexpr int I8inI32 = nbTypes<int32_t, int8_t>;
 #define ADDSIZE(func_name) CONCAT(func_name, SIZE)
 
 // SIMD utility functions
-#ifdef __ARM_NEON__
+#ifdef __ARM_NEON
 inline simd<16> simd16_zero(){
     return vdupq_n_s16(0);
 }
