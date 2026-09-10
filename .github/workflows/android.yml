@@ -1,0 +1,71 @@
+name: Build Prune for Android ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android-arm64:
+    name: Android ARM64 / NEON
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Prune
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK 27
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+
+      - name: Configure Android toolchain
+        run: |
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN=$ANDROID_SDK_ROOT/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Show compiler information
+        run: |
+          "$TOOLCHAIN/bin/aarch64-linux-android24-clang++" --version
+          "$TOOLCHAIN/bin/aarch64-linux-android24-clang++" \
+            -dM -E -x c++ /dev/null | grep -E \
+            '__aarch64__|__ARM_NEON__|__ARM_FEATURE_DOTPROD|__ARM_FEATURE_MATMUL_INT8' \
+            || true
+
+      - name: Build Prune ARM64
+        run: |
+          make clean || true
+
+          make -j2 \
+            CXX="$TOOLCHAIN/bin/aarch64-linux-android24-clang++" \
+            CC="$TOOLCHAIN/bin/aarch64-linux-android24-clang" \
+            ARCH=armv8-a \
+            OS=Android \
+            EXE=prune-android-arm64 \
+            OPT="-O3 -flto -funroll-loops"
+
+      - name: Check resulting binary
+        run: |
+          file prune-android-arm64
+          "$TOOLCHAIN/bin/llvm-readelf" -h prune-android-arm64
+          "$TOOLCHAIN/bin/llvm-readelf" -A prune-android-arm64 || true
+
+      - name: Package binary
+        run: |
+          mkdir -p android-build
+          cp prune-android-arm64 android-build/
+          cp nn-name.txt android-build/ 2>/dev/null || true
+          tar -czf prune-android-arm64.tar.gz android-build
+
+      - name: Upload ARM64 Android binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: prune-android-arm64
+          path: prune-android-arm64.tar.gz
