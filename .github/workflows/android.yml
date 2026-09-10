@@ -7,115 +7,254 @@ on:
   workflow_dispatch:
 
 jobs:
-  android-arm64:
-    name: Build ARM64 NEON
+  build-android-arm64:
     runs-on: ubuntu-24.04
 
     steps:
+      # ---------------------------------------------------------
+      # Checkout repository
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Find Makefile
+      # ---------------------------------------------------------
+      # Find the MAIN Prune Makefile
+      # ---------------------------------------------------------
+      - name: Find Prune Makefile
         shell: bash
         run: |
-          echo "Repository:"
-          pwd
+          echo "Searching for Prune Makefile..."
 
-          MAKEFILE=$(find . -name Makefile -type f -print -quit)
+          MAKEFILE=""
+
+          while IFS= read -r file; do
+            if grep -qE 'BASENAME[[:space:]]*=[[:space:]]*prune' "$file" 2>/dev/null; then
+              MAKEFILE="$file"
+              break
+            fi
+          done < <(find . -name Makefile -type f)
 
           if [ -z "$MAKEFILE" ]; then
-            echo "ERROR: No Makefile found."
+            echo "ERROR: Could not find Prune Makefile."
+            echo "Available Makefiles:"
+            find . -name Makefile -type f -print
             exit 1
           fi
 
           MAKE_DIR=$(dirname "$MAKEFILE")
 
-          echo "Found Makefile: $MAKEFILE"
-          echo "Make directory: $MAKE_DIR"
+          echo "Prune Makefile:"
+          echo "$MAKEFILE"
+
+          echo "Prune Make directory:"
+          echo "$MAKE_DIR"
 
           echo "MAKE_DIR=$MAKE_DIR" >> "$GITHUB_ENV"
 
-      - name: Set up Android SDK
+      # ---------------------------------------------------------
+      # Setup Android SDK / NDK
+      # ---------------------------------------------------------
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
+        shell: bash
         run: |
           sdkmanager "ndk;27.2.12479018"
 
-      - name: Configure Android toolchain
+      # ---------------------------------------------------------
+      # Configure NDK toolchain
+      # ---------------------------------------------------------
+      - name: Configure Android NDK
+        shell: bash
         run: |
-          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          export ANDROID_NDK="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          export TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
-          echo "TOOLCHAIN=$ANDROID_SDK_ROOT/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$ANDROID_NDK" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 
+          echo "Android NDK:"
+          echo "$ANDROID_NDK"
+
+          echo "Toolchain:"
+          echo "$TOOLCHAIN"
+
+      # ---------------------------------------------------------
+      # Check ARM64 compiler
+      # ---------------------------------------------------------
       - name: Check ARM64 compiler
-        run: |
-          "$TOOLCHAIN/bin/aarch64-linux-android24-clang++" --version
-
-      - name: Check ARM features
+        shell: bash
         run: |
           "$TOOLCHAIN/bin/aarch64-linux-android24-clang++" \
-            -march=armv8-a \
-            -dM -E -x c++ /dev/null |
-            grep -E \
+            --version
+
+          echo ""
+          echo "Testing ARM64 compiler..."
+
+          echo 'int main() { return 0; }' > test.cpp
+
+          "$TOOLCHAIN/bin/aarch64-linux-android24-clang++" \
+            test.cpp \
+            -o test-arm64
+
+          file test-arm64
+
+          rm -f test.cpp test-arm64
+
+      # ---------------------------------------------------------
+      # Check ARM SIMD feature macros
+      # ---------------------------------------------------------
+      - name: Check ARM SIMD features
+        shell: bash
+        run: |
+          echo "Checking ARM architecture macros..."
+
+          echo '' | "$TOOLCHAIN/bin/aarch64-linux-android24-clang" \
+            -dM -E - \
+            | grep -E \
             '__aarch64__|__ARM_NEON__|__ARM_FEATURE_DOTPROD|__ARM_FEATURE_MATMUL_INT8' \
             || true
 
-      - name: Build Prune
+      # ---------------------------------------------------------
+      # Build Prune
+      # ---------------------------------------------------------
+      - name: Build Prune for Android ARM64
         shell: bash
         run: |
+          set -e
+
           cd "$MAKE_DIR"
 
-          echo "Building in:"
+          echo "Building from:"
           pwd
 
+          echo ""
+          echo "Makefile:"
+          ls -lh Makefile
+
+          echo ""
+          echo "Cleaning..."
           make clean || true
+
+          echo ""
+          echo "Building Prune..."
 
           make -j2 \
             CXX="$TOOLCHAIN/bin/aarch64-linux-android24-clang++" \
             CC="$TOOLCHAIN/bin/aarch64-linux-android24-clang" \
             ARCH=armv8-a \
             OS=Android \
+            EXE=prune-android-arm64 \
             OPT="-O3 -flto -funroll-loops"
 
-      - name: Find compiled binary
+      # ---------------------------------------------------------
+      # Show everything produced by the build
+      # ---------------------------------------------------------
+      - name: Inspect build output
         shell: bash
         run: |
           cd "$MAKE_DIR"
 
-          echo "Build directory:"
-          pwd
+          echo "========================================"
+          echo "FILES IN PROJECT ROOT"
+          echo "========================================"
 
-          echo
-          echo "Files produced by compilation:"
-          find . -maxdepth 1 -type f -executable -printf '%f\n' || true
-
-          echo
-          echo "All files:"
           ls -lah
 
-          BINARY=$(find . -maxdepth 1 -type f -executable \
-            ! -name "*.sh" \
-            ! -name "*.py" \
-            -print -quit)
+          echo ""
+          echo "========================================"
+          echo "ALL EXECUTABLE FILES"
+          echo "========================================"
 
-          if [ -z "$BINARY" ]; then
-            echo "ERROR: Could not find compiled executable."
+          find . -type f -executable -print || true
+
+          echo ""
+          echo "========================================"
+          echo "ALL ELF FILES"
+          echo "========================================"
+
+          find . -type f -exec file {} \; \
+            | grep -E 'ELF.*(executable|shared object)' \
+            || true
+
+          echo ""
+          echo "========================================"
+          echo "PRUNE CANDIDATE"
+          echo "========================================"
+
+          if [ -f "./prune-android-arm64" ]; then
+            ls -lh "./prune-android-arm64"
+            file "./prune-android-arm64"
+          else
+            echo "prune-android-arm64 was NOT found in project root."
+          fi
+
+      # ---------------------------------------------------------
+      # Locate the actual Prune ARM64 executable
+      # ---------------------------------------------------------
+      - name: Locate Prune ARM64 executable
+        shell: bash
+        run: |
+          set -e
+
+          cd "$MAKE_DIR"
+
+          echo "Searching specifically for ARM64 ELF executables..."
+
+          PRUNE_BINARY=""
+
+          while IFS= read -r file; do
+            INFO=$(file "$file")
+
+            echo "$INFO"
+
+            if echo "$INFO" | grep -q \
+              'ELF 64-bit.*ARM aarch64.*executable'; then
+
+              PRUNE_BINARY="$file"
+              break
+            fi
+          done < <(find . -type f -executable -print)
+
+          if [ -z "$PRUNE_BINARY" ]; then
+            echo ""
+            echo "ERROR: No ARM64 executable was found."
+            echo ""
+            echo "All ELF files:"
+            find . -type f -exec file {} \; \
+              | grep ELF \
+              || true
+
             exit 1
           fi
 
-          BINARY=$(realpath "$BINARY")
+          PRUNE_BINARY=$(realpath "$PRUNE_BINARY")
 
-          echo "Found binary:"
-          echo "$BINARY"
+          echo ""
+          echo "========================================"
+          echo "FOUND PRUNE BINARY"
+          echo "========================================"
 
-          echo "BINARY=$BINARY" >> "$GITHUB_ENV"
+          echo "$PRUNE_BINARY"
 
-      - name: Check ARM64 binary
+          ls -lh "$PRUNE_BINARY"
+
+          file "$PRUNE_BINARY"
+
+          echo ""
+          echo "BINARY=$PRUNE_BINARY" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------
+      # Verify ELF architecture
+      # ---------------------------------------------------------
+      - name: Verify ARM64 binary
         shell: bash
         run: |
+          set -e
+
           echo "Checking:"
           echo "$BINARY"
 
@@ -123,18 +262,51 @@ jobs:
 
           "$TOOLCHAIN/bin/llvm-readelf" -h "$BINARY"
 
-      - name: Package binary
+          echo ""
+          echo "Checking architecture..."
+
+          "$TOOLCHAIN/bin/llvm-readelf" -h "$BINARY" \
+            | grep -E 'Class:.*ELF64|Machine:.*AArch64'
+
+      # ---------------------------------------------------------
+      # Show binary size
+      # ---------------------------------------------------------
+      - name: Show final binary size
         shell: bash
         run: |
-          mkdir -p android-build
+          echo "========================================"
+          echo "FINAL PRUNE BINARY"
+          echo "========================================"
 
-          cp "$BINARY" android-build/prune-android-arm64
+          ls -lh "$BINARY"
+
+          echo ""
+          echo "Exact byte size:"
+          stat -c '%s bytes' "$BINARY"
+
+      # ---------------------------------------------------------
+      # Package binary
+      # ---------------------------------------------------------
+      - name: Package Prune Android ARM64
+        shell: bash
+        run: |
+          mkdir -p package
+
+          cp "$BINARY" package/prune-android-arm64
 
           tar -czf prune-android-arm64.tar.gz \
-            android-build
+            -C package \
+            prune-android-arm64
 
-      - name: Upload Android ARM64 binary
+          echo "Package created:"
+          ls -lh prune-android-arm64.tar.gz
+
+      # ---------------------------------------------------------
+      # Upload artifact
+      # ---------------------------------------------------------
+      - name: Upload Prune Android ARM64
         uses: actions/upload-artifact@v4
         with:
           name: prune-android-arm64
           path: prune-android-arm64.tar.gz
+          if-no-files-found: error
