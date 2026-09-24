@@ -13,15 +13,16 @@ jobs:
       ARCH: armv8.2-a+dotprod
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Install host tools
-      # ------------------------------------------------------------
+      # ============================================================
+      # 2. HOST TOOLS
+      # ============================================================
       - name: Install host tools
         run: |
           set -eux
@@ -33,9 +34,9 @@ jobs:
             binutils-aarch64-linux-gnu \
             python3
 
-      # ------------------------------------------------------------
-      # 3. Locate Android SDK / sdkmanager
-      # ------------------------------------------------------------
+      # ============================================================
+      # 3. ANDROID SDK
+      # ============================================================
       - name: Locate Android SDK
         shell: bash
         run: |
@@ -54,20 +55,14 @@ jobs:
               -type f -name sdkmanager 2>/dev/null | head -n 1)"
           fi
 
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found"
-            find "$ANDROID_HOME" -maxdepth 5 -type f -name sdkmanager || true
-            exit 1
-          fi
+          test -n "$SDKMANAGER"
+          test -x "$SDKMANAGER"
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
-          echo "Using:"
-          echo "$SDKMANAGER"
-
-      # ------------------------------------------------------------
-      # 4. Install Android platform + NDK
-      # ------------------------------------------------------------
+      # ============================================================
+      # 4. ANDROID NDK
+      # ============================================================
       - name: Install Android NDK
         shell: bash
         run: |
@@ -86,15 +81,16 @@ jobs:
 
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
 
-      # ------------------------------------------------------------
-      # 5. Configure ARM64 Android toolchain
-      # ------------------------------------------------------------
+      # ============================================================
+      # 5. ARM64 TOOLCHAIN
+      # ============================================================
       - name: Configure ARM64 compiler
         shell: bash
         run: |
           set -eux
 
           NDK="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
           CC="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
@@ -121,9 +117,9 @@ jobs:
           echo "Target:"
           "$CXX" -dumpmachine
 
-      # ------------------------------------------------------------
-      # 6. Verify ARM64 + NEON + DotProd compiler
-      # ------------------------------------------------------------
+      # ============================================================
+      # 6. VERIFY ARM64
+      # ============================================================
       - name: Verify ARM64 NEON compiler
         shell: bash
         run: |
@@ -133,10 +129,11 @@ jobs:
 
           echo "Target = $TARGET"
 
-          echo "$TARGET" | grep -Eq '^aarch64-(unknown-)?linux-android'
+          echo "$TARGET" | \
+            grep -Eq '^aarch64-(unknown-)?linux-android'
 
           echo
-          echo "Checking predefined ARM macros..."
+          echo "ARM feature macros:"
 
           echo | "$CXX" \
             -march="$ARCH" \
@@ -146,43 +143,104 @@ jobs:
             grep -E \
               '__aarch64__|__ARM_NEON|__ARM_FEATURE_DOTPROD' || true
 
-      # ------------------------------------------------------------
-      # 7. Remove x86-only Makefile flags
-      #
-      # Do NOT remove ARCH.
-      # The Makefile expects ARCH and expands it into -march=$(ARCH).
-      # ------------------------------------------------------------
-      - name: Remove incompatible x86 Makefile flags
+      # ============================================================
+      # 7. LOCATE PRUNE SOURCE
+      # ============================================================
+      - name: Locate Prune source files
         shell: bash
         run: |
           set -eux
 
-          if [ -f Makefile ]; then
-            cp Makefile Makefile.android.original
+          echo "Repository structure:"
+          find . -maxdepth 3 -type f | sort | head -n 300
 
-            sed -i \
-              -e 's/ -m64//g' \
-              -e 's/-m64 //g' \
-              -e 's/ -march=native//g' \
-              -e 's/-march=native //g' \
-              Makefile
+          echo
+          echo "Searching for simd_definitions.hpp..."
 
-            echo "Remaining x86-specific flags:"
-            grep -nE -- '-m64|-march=native' Makefile || true
+          SIMD_HEADER="$(find . \
+            -type f \
+            -name 'simd_definitions.hpp' \
+            -print -quit)"
+
+          if [ -z "$SIMD_HEADER" ]; then
+            echo "ERROR: simd_definitions.hpp was not found."
+            exit 1
           fi
 
-      # ------------------------------------------------------------
-      # 8. SIMD diagnostic
-      #
-      # This ensures the exact SIMD header used by the engine
-      # still selects the ARM implementation before the full build.
-      # ------------------------------------------------------------
-      - name: Verify Prune SIMD header
+          SIMD_DIR="$(dirname "$SIMD_HEADER")"
+
+          echo "SIMD_HEADER=$SIMD_HEADER" >> "$GITHUB_ENV"
+          echo "SIMD_DIR=$SIMD_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "SIMD header:"
+          echo "$SIMD_HEADER"
+
+          echo
+          echo "SIMD directory:"
+          echo "$SIMD_DIR"
+
+          echo
+          echo "permute.cpp:"
+          find . -type f -name 'permute.cpp' -print
+
+          echo
+          echo "Makefiles:"
+          find . -maxdepth 3 \
+            -type f \
+            \( -name 'Makefile' -o -name 'makefile' \) \
+            -print
+
+      # ============================================================
+      # 8. REMOVE X86-ONLY MAKE FLAGS
+      # ============================================================
+      - name: Remove incompatible x86 flags
         shell: bash
         run: |
           set -eux
 
-          cat > simd_test.cpp <<'EOF'
+          MAKEFILE=""
+
+          if [ -f Makefile ]; then
+            MAKEFILE="Makefile"
+          elif [ -f makefile ]; then
+            MAKEFILE="makefile"
+          else
+            echo "ERROR: Makefile not found."
+            exit 1
+          fi
+
+          cp "$MAKEFILE" "${MAKEFILE}.android.original"
+
+          sed -i \
+            -e 's/ -m64//g' \
+            -e 's/-m64 //g' \
+            -e 's/ -march=native//g' \
+            -e 's/-march=native //g' \
+            "$MAKEFILE"
+
+          echo
+          echo "Checking for remaining x86 flags:"
+          grep -nE -- '-m64|-march=native' "$MAKEFILE" || true
+
+      # ============================================================
+      # 9. SIMD DIAGNOSTIC
+      #
+      # IMPORTANT:
+      # Put simd_test.cpp INSIDE the same directory as the header.
+      # This avoids assuming that the header is in repository root.
+      # ============================================================
+      - name: Verify Prune ARM SIMD
+        shell: bash
+        run: |
+          set -eux
+
+          TEST_DIR="$SIMD_DIR"
+
+          echo "Using SIMD directory:"
+          echo "$TEST_DIR"
+
+          cat > "$TEST_DIR/simd_test.cpp" <<'EOF'
           #include "simd_definitions.hpp"
 
           int main() {
@@ -194,6 +252,7 @@ jobs:
           }
           EOF
 
+          echo
           echo "Compiling SIMD diagnostic..."
 
           "$CXX" \
@@ -201,28 +260,34 @@ jobs:
             -O2 \
             -march="$ARCH" \
             -D__ARM_NEON__ \
-            -I. \
-            -c simd_test.cpp \
-            -o simd_test.o
+            -I"$TEST_DIR" \
+            -c "$TEST_DIR/simd_test.cpp" \
+            -o "$TEST_DIR/simd_test.o"
 
           echo
-          echo "SIMD diagnostic PASSED."
+          echo "========================================"
+          echo "ARM64 SIMD DIAGNOSTIC PASSED"
+          echo "========================================"
 
-      # ------------------------------------------------------------
-      # 9. Build ARM64 permute utility
-      #
-      # IMPORTANT:
-      # model.bin must be generated using ARM SIMD layout.
-      # Do NOT run an x86-built permuter on the GitHub runner.
-      # ------------------------------------------------------------
+      # ============================================================
+      # 10. BUILD ARM64 PERMUTER
+      # ============================================================
       - name: Build ARM64 NEON permuter
         shell: bash
         run: |
           set -eux
 
-          test -f permute.cpp
+          PERMUTE="$(find . \
+            -type f \
+            -name 'permute.cpp' \
+            -print -quit)"
 
-          echo "Building permute.cpp for ARM64 NEON..."
+          test -n "$PERMUTE"
+
+          PERMUTE_DIR="$(dirname "$PERMUTE")"
+
+          echo "permute.cpp:"
+          echo "$PERMUTE"
 
           "$CXX" \
             -std=c++17 \
@@ -231,27 +296,28 @@ jobs:
             -D__ARM_NEON__ \
             -flax-vector-conversions \
             -static \
-            permute.cpp \
+            -I"$PERMUTE_DIR" \
+            -I"$SIMD_DIR" \
+            "$PERMUTE" \
             -o permute-arm64
 
+          chmod +x permute-arm64
+
+          echo
           file permute-arm64
 
           file permute-arm64 | grep -qi 'aarch64'
 
-          chmod +x permute-arm64
-
-      # ------------------------------------------------------------
-      # 10. Locate model input
-      # ------------------------------------------------------------
+      # ============================================================
+      # 11. FIND MODEL
+      # ============================================================
       - name: Locate NNUE model
         shell: bash
         run: |
           set -eux
 
-          echo "Searching for model files..."
-
-          find . -maxdepth 4 \
-            -type f \
+          echo "Model files:"
+          find . -type f \
             \( \
               -name '*.nnue' \
               -o -name '*.bin' \
@@ -259,11 +325,9 @@ jobs:
             \) \
             -print
 
-      # ------------------------------------------------------------
-      # 11. Generate model.bin using ARM64 permuter
-      #
-      # The exact input model name is detected automatically.
-      # ------------------------------------------------------------
+      # ============================================================
+      # 12. GENERATE MODEL.BIN WITH ARM64 PERMUTER
+      # ============================================================
       - name: Generate ARM64 model.bin
         shell: bash
         run: |
@@ -284,14 +348,15 @@ jobs:
           done
 
           if [ -z "$INPUT_MODEL" ]; then
-            INPUT_MODEL="$(find . -type f \
+            INPUT_MODEL="$(find . \
+              -type f \
               \( -name '*.nnue' -o -name '*.bin' \) \
               ! -name 'model.bin' \
               | head -n 1 || true)"
           fi
 
           if [ -z "$INPUT_MODEL" ]; then
-            echo "ERROR: Could not locate NNUE/model input."
+            echo "ERROR: NNUE/model input not found."
             exit 1
           fi
 
@@ -299,17 +364,8 @@ jobs:
           echo "$INPUT_MODEL"
 
           echo
-          echo "Checking ARM64 permuter:"
-          file ./permute-arm64
+          echo "Running ARM64 permuter..."
 
-          echo
-          echo "Running ARM64 permuter through QEMU..."
-
-          chmod +x ./permute-arm64
-
-          # Try the standard Prune permutation invocation.
-          # If the source's existing build script specifies another
-          # argument order, use that exact order instead.
           timeout 120 \
             qemu-aarch64-static \
             ./permute-arm64 \
@@ -319,28 +375,25 @@ jobs:
           test -s model.bin
 
           echo
-          echo "Generated model.bin:"
+          echo "Generated model:"
           ls -lh model.bin
 
-          file model.bin
+          sha256sum model.bin
 
-      # ------------------------------------------------------------
-      # 12. Build complete Prune engine
-      # ------------------------------------------------------------
+      # ============================================================
+      # 13. FULL PRUNE BUILD
+      # ============================================================
       - name: Build Prune Android ARM64 NEON
         shell: bash
         run: |
           set -eux
 
-          echo "========================================"
-          echo "BUILD CONFIGURATION"
-          echo "========================================"
-          echo "CC      = $CC"
-          echo "CXX     = $CXX"
-          echo "ARCH    = $ARCH"
-          echo "API     = $ANDROID_API"
-          echo "NDK     = $ANDROID_NDK_VERSION"
-          echo "========================================"
+          CFLAGS_ANDROID="
+            -O3
+            -pipe
+            -march=${ARCH}
+            -D__ARM_NEON__
+          "
 
           CXXFLAGS_ANDROID="
             -std=c++17
@@ -350,19 +403,13 @@ jobs:
             -D__ARM_NEON__
           "
 
-          CFLAGS_ANDROID="
-            -O3
-            -pipe
-            -march=${ARCH}
-            -D__ARM_NEON__
-          "
-
-          LDFLAGS_ANDROID="
-            -static
-          "
-
-          echo
-          echo "Running make..."
+          echo "========================================"
+          echo "PRUNE ANDROID ARM64 BUILD"
+          echo "========================================"
+          echo "ARCH = $ARCH"
+          echo "CC   = $CC"
+          echo "CXX  = $CXX"
+          echo "========================================"
 
           make -B prune \
             CC="$CC" \
@@ -372,62 +419,48 @@ jobs:
             CFLAGS="$CFLAGS_ANDROID" \
             CXXFLAGS="$CXXFLAGS_ANDROID" \
             CPPFLAGS="-D__ARM_NEON__" \
-            LDFLAGS="$LDFLAGS_ANDROID"
+            LDFLAGS="-static"
 
-      # ------------------------------------------------------------
-      # 13. Find resulting binary
-      # ------------------------------------------------------------
-      - name: Locate Prune binary
+      # ============================================================
+      # 14. FIND ENGINE
+      # ============================================================
+      - name: Locate Prune executable
         shell: bash
         run: |
           set -eux
 
-          echo "Executable files:"
+          echo "Executables:"
           find . -type f -perm -111 -print
-
-          echo
-          echo "Likely Prune binaries:"
-          find . -type f \
-            \( \
-              -name 'prune' \
-              -o -name 'prune-*' \
-            \) \
-            -print
-
-      # ------------------------------------------------------------
-      # 14. Identify binary automatically
-      # ------------------------------------------------------------
-      - name: Prepare Android binary
-        shell: bash
-        run: |
-          set -eux
 
           BINARY=""
 
           if [ -x ./prune ]; then
             BINARY="./prune"
           else
-            BINARY="$(find . -type f -name 'prune' -perm -111 | head -n 1 || true)"
+            BINARY="$(find . \
+              -type f \
+              -name 'prune' \
+              -perm -111 \
+              | head -n 1 || true)"
           fi
 
           if [ -z "$BINARY" ]; then
-            echo "ERROR: Prune executable was not found."
+            echo "ERROR: Prune executable not found."
             exit 1
           fi
-
-          echo "BINARY=$BINARY" >> "$GITHUB_ENV"
 
           cp "$BINARY" prune-android-arm64-neon
 
           chmod +x prune-android-arm64-neon
 
-          echo "Prepared:"
+          echo "BINARY=$BINARY" >> "$GITHUB_ENV"
+
           ls -lh prune-android-arm64-neon
 
-      # ------------------------------------------------------------
-      # 15. ELF architecture / dependency validation
-      # ------------------------------------------------------------
-      - name: Validate Android ELF
+      # ============================================================
+      # 15. ELF VALIDATION
+      # ============================================================
+      - name: Validate ARM64 ELF
         shell: bash
         run: |
           set -eux
@@ -438,15 +471,20 @@ jobs:
             grep -Ei 'ARM aarch64|AArch64|64-bit'
 
           echo
-          echo "ELF header:"
           readelf -h prune-android-arm64-neon
 
           echo
           echo "Dynamic dependencies:"
           readelf -d prune-android-arm64-neon || true
 
-          echo
-          echo "NEON / ARM instructions:"
+      # ============================================================
+      # 16. DISASSEMBLY CHECK
+      # ============================================================
+      - name: Check ARM SIMD instructions
+        shell: bash
+        run: |
+          set -eux
+
           aarch64-linux-gnu-objdump \
             -d \
             prune-android-arm64-neon \
@@ -458,26 +496,20 @@ jobs:
             | head -n 50 \
             || true
 
-      # ------------------------------------------------------------
-      # 16. UCI smoke test under QEMU
-      #
-      # This is important: compilation alone does NOT prove that
-      # Prune is actually playing correctly.
-      # ------------------------------------------------------------
+      # ============================================================
+      # 17. UCI SMOKE TEST
+      # ============================================================
       - name: UCI smoke test
         shell: bash
         run: |
           set -eux
 
-          chmod +x prune-android-arm64-neon
-
-          echo "Sending UCI commands..."
-
           set +e
 
           timeout 20 \
             qemu-aarch64-static \
-            ./prune-android-arm64-neon > uci-output.txt 2>&1 <<'EOF'
+            ./prune-android-arm64-neon \
+            > uci-output.txt 2>&1 <<'EOF'
           uci
           isready
           position startpos
@@ -494,34 +526,18 @@ jobs:
           echo
           echo "QEMU exit status: $STATUS"
 
-          # timeout returns 124 if the engine does not exit itself.
-          # That is not automatically a build failure if bestmove
-          # was successfully produced.
           grep -E '^uciok$' uci-output.txt
           grep -E '^readyok$' uci-output.txt
           grep -E '^bestmove [a-h][1-8][a-h][1-8]' uci-output.txt
 
           echo
-          echo "UCI SMOKE TEST PASSED."
+          echo "========================================"
+          echo "UCI SMOKE TEST PASSED"
+          echo "========================================"
 
-      # ------------------------------------------------------------
-      # 17. Show model checksum
-      # ------------------------------------------------------------
-      - name: Check model
-        shell: bash
-        run: |
-          set -eux
-
-          test -s model.bin
-
-          echo "model.bin:"
-          ls -lh model.bin
-
-          sha256sum model.bin
-
-      # ------------------------------------------------------------
-      # 18. Package artifacts
-      # ------------------------------------------------------------
+      # ============================================================
+      # 18. PACKAGE
+      # ============================================================
       - name: Package release
         shell: bash
         run: |
@@ -531,25 +547,19 @@ jobs:
 
           cp prune-android-arm64-neon release/
 
-          if [ -f model.bin ]; then
-            cp model.bin release/
-          fi
-
-          if [ -f nn-name.txt ]; then
-            cp nn-name.txt release/
-          fi
-
-          cp uci-output.txt release/ || true
+          [ ! -f model.bin ] || cp model.bin release/
+          [ ! -f nn-name.txt ] || cp nn-name.txt release/
+          [ ! -f uci-output.txt ] || cp uci-output.txt release/
 
           sha256sum release/* > release/SHA256SUMS.txt
 
           echo
-          echo "Release contents:"
+          echo "Release:"
           ls -lh release
 
-      # ------------------------------------------------------------
-      # 19. Upload artifacts
-      # ------------------------------------------------------------
+      # ============================================================
+      # 19. UPLOAD
+      # ============================================================
       - name: Upload Prune Android ARM64 NEON
         uses: actions/upload-artifact@v4
         with:
