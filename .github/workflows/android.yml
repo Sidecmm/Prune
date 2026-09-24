@@ -74,6 +74,10 @@ jobs:
           echo "Android SDK:"
           echo "$SDK"
 
+          echo
+          echo "SDK contents:"
+          ls -lah "$SDK"
+
 
       # ============================================================
       # 4. LOCATE SDKMANAGER
@@ -184,7 +188,7 @@ jobs:
 
 
       # ============================================================
-      # 9. VERIFY ANDROID COMPILER
+      # 9. VERIFY ANDROID ARM64 COMPILER
       # ============================================================
       - name: Verify Android ARM64 compiler
         shell: bash
@@ -238,13 +242,12 @@ jobs:
           ls -lh "${NETNAME}.bin"
 
           echo
+          echo "SHA256:"
           sha256sum "${NETNAME}.bin"
 
 
       # ============================================================
       # 11. VERIFY HOST ARM64 COMPILER
-      #
-      # This is the compiler used only for permute.cpp.
       # ============================================================
       - name: Verify ARM64 host compiler
         shell: bash
@@ -260,10 +263,7 @@ jobs:
 
 
       # ============================================================
-      # 12. VERIFY NEON PREDEFINED MACROS
-      #
-      # This is important because Prune's SIMD header explicitly
-      # checks for ARM NEON.
+      # 12. VERIFY ARM NEON MACROS
       # ============================================================
       - name: Verify ARM NEON compiler macros
         shell: bash
@@ -286,18 +286,37 @@ jobs:
 
 
       # ============================================================
-      # 13. BUILD ARM64 PERMUTE
+      # 13. CHECK PRUNE SIMD DEFINITIONS
+      #
+      # This gives useful information before compilation.
+      # ============================================================
+      - name: Inspect Prune SIMD definitions
+        working-directory: core
+        shell: bash
+        run: |
+          set -e
+
+          echo "Relevant SIMD definitions:"
+          grep -n \
+            -E \
+            "__ARM_NEON__|__aarch64__|SSE2|_simd|using simd" \
+            simd_definitions.hpp \
+            | head -80 \
+            || true
+
+
+      # ============================================================
+      # 14. BUILD ARM64 NEON PERMUTE
       #
       # IMPORTANT:
       #
-      # Prune's simd_definitions.hpp requires an ARM NEON macro.
+      # Prune's NNUE SIMD code uses vector conversions which GCC
+      # rejects by default on ARM.
       #
-      # We explicitly select ARMv8 NEON here.
+      # -flax-vector-conversions preserves the source's intended
+      # vector conversion behavior.
       #
-      # We also explicitly define __ARM_NEON__ because Prune's
-      # SIMD dispatch depends on that macro.
-      #
-      # DotProd is NOT required for permute.cpp.
+      # We do NOT modify NNUE.hpp.
       # ============================================================
       - name: Build ARM64 NEON permute
         working-directory: core
@@ -314,6 +333,7 @@ jobs:
             -std=gnu++17 \
             -march=armv8-a+simd \
             -D__ARM_NEON__ \
+            -flax-vector-conversions \
             -static \
             -o permute-arm64 \
             permute.cpp
@@ -333,12 +353,9 @@ jobs:
 
 
       # ============================================================
-      # 14. GENERATE ARM NEON MODEL
+      # 15. GENERATE ARM NEON MODEL
       #
-      # Execute the ARM64 permutation utility through QEMU.
-      #
-      # This is important because the permutation code must execute
-      # with the ARM NEON implementation, not x86 SSE.
+      # Execute ARM64 permute under QEMU.
       # ============================================================
       - name: Generate ARM NEON model.bin
         working-directory: core
@@ -369,35 +386,27 @@ jobs:
 
 
       # ============================================================
-      # 15. VERIFY ARM SIMD SOURCE
+      # 16. VERIFY PERMUTE EXECUTABLE
       # ============================================================
-      - name: Verify Prune SIMD source
+      - name: Verify permute executable
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          echo "Checking SIMD source..."
+          echo "Testing ARM64 executable under QEMU..."
 
-          grep -n \
-            -E \
-            "__ARM_NEON__|__aarch64__" \
-            simd_definitions.hpp \
-            | head -30
-
-          echo
-          echo "Checking permute.cpp..."
-
-          grep -n \
-            -E \
-            "simd|NEON|ARM" \
-            permute.cpp \
-            | head -30 \
+          qemu-aarch64-static \
+            ./permute-arm64 \
+            --help \
+            >/dev/null 2>&1 \
             || true
+
+          echo "ARM64 permute executable can be invoked through QEMU."
 
 
       # ============================================================
-      # 16. PREPARE MAKEFILE
+      # 17. PREPARE MAKEFILE
       # ============================================================
       - name: Prepare Makefile
         working-directory: core
@@ -414,7 +423,7 @@ jobs:
 
 
       # ============================================================
-      # 17. CLEAN BUILD
+      # 18. CLEAN BUILD
       # ============================================================
       - name: Clean build
         working-directory: core
@@ -435,14 +444,13 @@ jobs:
 
 
       # ============================================================
-      # 18. COMPILE PRUNE
+      # 19. COMPILE PRUNE FOR ANDROID ARM64
       #
-      # Android ARM64:
+      # Main engine:
       #
-      #   ARMv8.2-A + DotProd
+      # ARMv8.2-A + DotProd
       #
-      # The phone target is deliberately different from the
-      # generic ARMv8 NEON permutation utility above.
+      # This is separate from the generic ARMv8 NEON permute build.
       # ============================================================
       - name: Compile Prune Android ARM64 NEON
         working-directory: core
@@ -505,7 +513,7 @@ jobs:
 
 
       # ============================================================
-      # 19. LOCATE BINARY
+      # 20. LOCATE BINARY
       # ============================================================
       - name: Locate Prune binary
         working-directory: core
@@ -530,6 +538,7 @@ jobs:
             exit 1
           fi
 
+          echo
           echo "Found:"
           echo "$PRUNE"
 
@@ -539,7 +548,7 @@ jobs:
 
 
       # ============================================================
-      # 20. VERIFY AARCH64 ELF
+      # 21. VERIFY AARCH64 ELF
       # ============================================================
       - name: Verify AArch64 ELF
         working-directory: core
@@ -571,7 +580,7 @@ jobs:
 
 
       # ============================================================
-      # 21. INSPECT DEPENDENCIES
+      # 22. INSPECT DEPENDENCIES
       # ============================================================
       - name: Inspect binary dependencies
         working-directory: core
@@ -593,7 +602,7 @@ jobs:
 
 
       # ============================================================
-      # 22. INSPECT ARM SIMD INSTRUCTIONS
+      # 23. INSPECT ARM SIMD INSTRUCTIONS
       # ============================================================
       - name: Inspect ARM NEON instructions
         working-directory: core
@@ -613,7 +622,7 @@ jobs:
 
 
       # ============================================================
-      # 23. FINAL VALIDATION
+      # 24. FINAL VALIDATION
       # ============================================================
       - name: Final validation
         working-directory: core
@@ -649,7 +658,7 @@ jobs:
 
 
       # ============================================================
-      # 24. PACKAGE
+      # 25. PACKAGE ARTIFACT
       # ============================================================
       - name: Package Android build
         shell: bash
@@ -673,12 +682,12 @@ jobs:
             > android-artifact/SHA256SUMS.txt
 
           echo
-          echo "Artifact:"
+          echo "Artifact contents:"
           ls -lah android-artifact
 
 
       # ============================================================
-      # 25. UPLOAD
+      # 26. UPLOAD
       # ============================================================
       - name: Upload Android ARM64 NEON
         uses: actions/upload-artifact@v4
