@@ -74,10 +74,6 @@ jobs:
           echo "Android SDK:"
           echo "$SDK"
 
-          echo
-          echo "SDK contents:"
-          ls -lah "$SDK"
-
 
       # ============================================================
       # 4. LOCATE SDKMANAGER
@@ -150,8 +146,6 @@ jobs:
 
           echo "NDK:"
           echo "$NDK"
-
-          ls -lah "$NDK"
 
 
       # ============================================================
@@ -286,9 +280,7 @@ jobs:
 
 
       # ============================================================
-      # 13. CHECK PRUNE SIMD DEFINITIONS
-      #
-      # This gives useful information before compilation.
+      # 13. INSPECT PRUNE SIMD DEFINITIONS
       # ============================================================
       - name: Inspect Prune SIMD definitions
         working-directory: core
@@ -297,6 +289,7 @@ jobs:
           set -e
 
           echo "Relevant SIMD definitions:"
+
           grep -n \
             -E \
             "__ARM_NEON__|__aarch64__|SSE2|_simd|using simd" \
@@ -308,15 +301,10 @@ jobs:
       # ============================================================
       # 14. BUILD ARM64 NEON PERMUTE
       #
-      # IMPORTANT:
+      # Prune's SIMD code requires NEON.
       #
-      # Prune's NNUE SIMD code uses vector conversions which GCC
-      # rejects by default on ARM.
-      #
-      # -flax-vector-conversions preserves the source's intended
-      # vector conversion behavior.
-      #
-      # We do NOT modify NNUE.hpp.
+      # -flax-vector-conversions is required by the existing
+      # ARM vector implementation.
       # ============================================================
       - name: Build ARM64 NEON permute
         working-directory: core
@@ -354,8 +342,6 @@ jobs:
 
       # ============================================================
       # 15. GENERATE ARM NEON MODEL
-      #
-      # Execute ARM64 permute under QEMU.
       # ============================================================
       - name: Generate ARM NEON model.bin
         working-directory: core
@@ -386,29 +372,9 @@ jobs:
 
 
       # ============================================================
-      # 16. VERIFY PERMUTE EXECUTABLE
+      # 16. BACKUP ORIGINAL MAKEFILE
       # ============================================================
-      - name: Verify permute executable
-        working-directory: core
-        shell: bash
-        run: |
-          set -e
-
-          echo "Testing ARM64 executable under QEMU..."
-
-          qemu-aarch64-static \
-            ./permute-arm64 \
-            --help \
-            >/dev/null 2>&1 \
-            || true
-
-          echo "ARM64 permute executable can be invoked through QEMU."
-
-
-      # ============================================================
-      # 17. PREPARE MAKEFILE
-      # ============================================================
-      - name: Prepare Makefile
+      - name: Backup Makefile
         working-directory: core
         shell: bash
         run: |
@@ -416,10 +382,52 @@ jobs:
 
           cp Makefile Makefile.android.original
 
-          sed -i 's/ -m64//g' Makefile
+          echo "Original Makefile backed up."
 
-          echo "Remaining -m64 flags:"
+
+      # ============================================================
+      # 17. REMOVE HOST-ONLY ARCHITECTURE FLAGS
+      #
+      # IMPORTANT:
+      #
+      # The Prune Makefile contains:
+      #
+      #   -m64
+      #   -march=native
+      #
+      # Both are inappropriate for Android cross-compilation.
+      #
+      # We remove ONLY those architecture-selection flags.
+      # ============================================================
+      - name: Prepare Makefile for Android
+        working-directory: core
+        shell: bash
+        run: |
+          set -e
+
+          echo "Removing host-specific architecture flags..."
+
+          sed -i \
+            -e 's/ -m64//g' \
+            -e 's/ -march=native//g' \
+            Makefile
+
+          echo
+          echo "Checking for -m64:"
           grep -n -- "-m64" Makefile || true
+
+          echo
+          echo "Checking for -march=native:"
+          grep -n -- "-march=native" Makefile || true
+
+          echo
+          echo "Makefile architecture flags after cleanup:"
+
+          grep -n \
+            -E \
+            -- "-march=|-mcpu=|-m64" \
+            Makefile \
+            || true
 
 
       # ============================================================
@@ -446,11 +454,11 @@ jobs:
       # ============================================================
       # 19. COMPILE PRUNE FOR ANDROID ARM64
       #
-      # Main engine:
+      # Explicit target:
       #
-      # ARMv8.2-A + DotProd
+      #   ARMv8.2-A + DotProd
       #
-      # This is separate from the generic ARMv8 NEON permute build.
+      # The Makefile's -march=native has already been removed.
       # ============================================================
       - name: Compile Prune Android ARM64 NEON
         working-directory: core
