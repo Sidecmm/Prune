@@ -21,20 +21,15 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-
-      # ============================================================
-      # 2. INSTALL HOST TOOLS
-      # ============================================================
       - name: Install host tools
         run: |
+          set -e
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -43,12 +38,13 @@ jobs:
             file \
             binutils-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            qemu-user-static
+            qemu-user-static \
+            perl
 
+      # ------------------------------------------------------------
+      # ANDROID SDK
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 3. LOCATE ANDROID SDK
-      # ============================================================
       - name: Locate Android SDK
         shell: bash
         run: |
@@ -56,13 +52,10 @@ jobs:
 
           if [ -d "/usr/local/lib/android/sdk" ]; then
             SDK="/usr/local/lib/android/sdk"
-
           elif [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT" ]; then
             SDK="$ANDROID_SDK_ROOT"
-
           elif [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ]; then
             SDK="$ANDROID_HOME"
-
           else
             echo "ERROR: Android SDK was not found."
             exit 1
@@ -74,10 +67,6 @@ jobs:
           echo "Android SDK:"
           echo "$SDK"
 
-
-      # ============================================================
-      # 4. LOCATE SDKMANAGER
-      # ============================================================
       - name: Locate sdkmanager
         shell: bash
         run: |
@@ -104,10 +93,6 @@ jobs:
 
           "$SDKMANAGER" --version
 
-
-      # ============================================================
-      # 5. ACCEPT ANDROID LICENSES
-      # ============================================================
       - name: Accept Android licenses
         shell: bash
         run: |
@@ -117,10 +102,6 @@ jobs:
 
           echo "Android licenses accepted."
 
-
-      # ============================================================
-      # 6. INSTALL ANDROID PLATFORM + NDK
-      # ============================================================
       - name: Install Android NDK
         shell: bash
         run: |
@@ -131,10 +112,6 @@ jobs:
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
 
-
-      # ============================================================
-      # 7. VERIFY NDK
-      # ============================================================
       - name: Verify NDK
         shell: bash
         run: |
@@ -147,10 +124,10 @@ jobs:
           echo "NDK:"
           echo "$NDK"
 
+      # ------------------------------------------------------------
+      # ANDROID TOOLCHAIN
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 8. CONFIGURE ANDROID TOOLCHAIN
-      # ============================================================
       - name: Configure Android toolchain
         shell: bash
         run: |
@@ -170,20 +147,14 @@ jobs:
 
           echo "ANDROID_NDK=$NDK" >> "$GITHUB_ENV"
           echo "ANDROID_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
-
           echo "ANDROID_CC=$CC" >> "$GITHUB_ENV"
           echo "ANDROID_CXX=$CXX" >> "$GITHUB_ENV"
-
           echo "ANDROID_AR=$AR" >> "$GITHUB_ENV"
           echo "ANDROID_STRIP=$STRIP" >> "$GITHUB_ENV"
 
           echo "CC=$CC"
           echo "CXX=$CXX"
 
-
-      # ============================================================
-      # 9. VERIFY ANDROID ARM64 COMPILER
-      # ============================================================
       - name: Verify Android ARM64 compiler
         shell: bash
         run: |
@@ -199,16 +170,15 @@ jobs:
 
           echo "$TARGET"
 
-          echo "$TARGET" \
-            | grep -Eq '^aarch64-(unknown-)?linux-android'
+          echo "$TARGET" | grep -Eq '^aarch64-(unknown-)?linux-android'
 
           echo
           echo "PASS: Android ARM64 compiler detected."
 
+      # ------------------------------------------------------------
+      # NNUE
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 10. DOWNLOAD PRUNE NNUE
-      # ============================================================
       - name: Download Prune NNUE
         working-directory: core
         shell: bash
@@ -239,10 +209,10 @@ jobs:
           echo "SHA256:"
           sha256sum "${NETNAME}.bin"
 
+      # ------------------------------------------------------------
+      # HOST AARCH64 COMPILER
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 11. VERIFY HOST ARM64 COMPILER
-      # ============================================================
       - name: Verify ARM64 host compiler
         shell: bash
         run: |
@@ -255,11 +225,7 @@ jobs:
           echo "Target:"
           aarch64-linux-gnu-g++ -dumpmachine
 
-
-      # ============================================================
-      # 12. VERIFY ARM NEON MACROS
-      # ============================================================
-      - name: Verify ARM NEON compiler macros
+      - name: Verify ARM NEON macros
         shell: bash
         run: |
           set -e
@@ -278,10 +244,10 @@ jobs:
           echo
           echo "PASS: ARM NEON macros are available."
 
+      # ------------------------------------------------------------
+      # SIMD SOURCE CHECK
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 13. INSPECT PRUNE SIMD DEFINITIONS
-      # ============================================================
       - name: Inspect Prune SIMD definitions
         working-directory: core
         shell: bash
@@ -297,15 +263,15 @@ jobs:
             | head -80 \
             || true
 
+      # ------------------------------------------------------------
+      # ARM PERMUTE
+      #
+      # IMPORTANT:
+      # model.bin is generated by the ARM executable under QEMU.
+      # This prevents the x86 GitHub runner from generating an
+      # architecture-specific NNUE permutation.
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 14. BUILD ARM64 NEON PERMUTE
-      #
-      # Prune's SIMD code requires NEON.
-      #
-      # -flax-vector-conversions is required by the existing
-      # ARM vector implementation.
-      # ============================================================
       - name: Build ARM64 NEON permute
         working-directory: core
         shell: bash
@@ -339,10 +305,6 @@ jobs:
             | grep -E \
               "Class:|Machine:|Type:"
 
-
-      # ============================================================
-      # 15. GENERATE ARM NEON MODEL
-      # ============================================================
       - name: Generate ARM NEON model.bin
         working-directory: core
         shell: bash
@@ -370,10 +332,10 @@ jobs:
           echo "SHA256:"
           sha256sum model.bin
 
+      # ------------------------------------------------------------
+      # MAKEFILE
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 16. BACKUP ORIGINAL MAKEFILE
-      # ============================================================
       - name: Backup Makefile
         working-directory: core
         shell: bash
@@ -384,44 +346,58 @@ jobs:
 
           echo "Original Makefile backed up."
 
-
-      # ============================================================
-      # 17. REMOVE HOST-ONLY ARCHITECTURE FLAGS
-      #
-      # IMPORTANT:
-      #
-      # The Prune Makefile contains:
-      #
-      #   -m64
-      #   -march=native
-      #
-      # Both are inappropriate for Android cross-compilation.
-      #
-      # We remove ONLY those architecture-selection flags.
-      # ============================================================
-      - name: Prepare Makefile for Android
+      - name: Remove x86 host architecture flags
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          echo "Removing host-specific architecture flags..."
+          echo "========================================"
+          echo "ORIGINAL ARCHITECTURE FLAGS"
+          echo "========================================"
 
-          sed -i \
-            -e 's/ -m64//g' \
-            -e 's/ -march=native//g' \
-            Makefile
-
-          echo
-          echo "Checking for -m64:"
-          grep -n -- "-m64" Makefile || true
-
-          echo
-          echo "Checking for -march=native:"
-          grep -n -- "-march=native" Makefile || true
+          grep -n \
+            -E \
+            -- "-m64|-march=native" \
+            Makefile \
+            || true
 
           echo
-          echo "Makefile architecture flags after cleanup:"
+          echo "Removing x86-specific flags..."
+
+          # Remove -m64 wherever it occurs.
+          perl -0pi -e 's/(^|[[:space:]])-m64(?=[[:space:]]|$)/$1/g' Makefile
+
+          # Remove -march=native wherever it occurs.
+          perl -0pi -e 's/(^|[[:space:]])-march=native(?=[[:space:]]|$)/$1/g' Makefile
+
+          echo
+          echo "========================================"
+          echo "VERIFYING CLEAN MAKEFILE"
+          echo "========================================"
+
+          echo
+          echo "Remaining -m64:"
+          if grep -n -- "-m64" Makefile; then
+            echo
+            echo "ERROR: -m64 still exists in Makefile."
+            exit 1
+          else
+            echo "NONE"
+          fi
+
+          echo
+          echo "Remaining -march=native:"
+          if grep -n -- "-march=native" Makefile; then
+            echo
+            echo "ERROR: -march=native still exists in Makefile."
+            exit 1
+          else
+            echo "NONE"
+          fi
+
+          echo
+          echo "Architecture flags after cleanup:"
 
           grep -n \
             -E \
@@ -429,10 +405,13 @@ jobs:
             Makefile \
             || true
 
+          echo
+          echo "PASS: x86-specific architecture flags removed."
 
-      # ============================================================
-      # 18. CLEAN BUILD
-      # ============================================================
+      # ------------------------------------------------------------
+      # CLEAN
+      # ------------------------------------------------------------
+
       - name: Clean build
         working-directory: core
         shell: bash
@@ -450,16 +429,10 @@ jobs:
 
           test -s model.bin
 
+      # ------------------------------------------------------------
+      # BUILD
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 19. COMPILE PRUNE FOR ANDROID ARM64
-      #
-      # Explicit target:
-      #
-      #   ARMv8.2-A + DotProd
-      #
-      # The Makefile's -march=native has already been removed.
-      # ============================================================
       - name: Compile Prune Android ARM64 NEON
         working-directory: core
         shell: bash
@@ -509,6 +482,24 @@ jobs:
 
           echo
           echo "========================================"
+          echo "FINAL MAKEFILE CHECK"
+          echo "========================================"
+
+          if grep -n -- "-march=native" Makefile; then
+            echo "ERROR: -march=native is still present."
+            exit 1
+          fi
+
+          if grep -n -- "-m64" Makefile; then
+            echo "ERROR: -m64 is still present."
+            exit 1
+          fi
+
+          echo "PASS: no -march=native"
+          echo "PASS: no -m64"
+
+          echo
+          echo "========================================"
           echo "STARTING PRUNE COMPILATION"
           echo "========================================"
 
@@ -519,10 +510,10 @@ jobs:
             CXXFLAGS="$CXXFLAGS" \
             LDFLAGS="$LDFLAGS"
 
+      # ------------------------------------------------------------
+      # LOCATE BINARY
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 20. LOCATE BINARY
-      # ============================================================
       - name: Locate Prune binary
         working-directory: core
         shell: bash
@@ -554,10 +545,10 @@ jobs:
 
           chmod +x prune-android-arm64-neon
 
+      # ------------------------------------------------------------
+      # ELF VALIDATION
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 21. VERIFY AARCH64 ELF
-      # ============================================================
       - name: Verify AArch64 ELF
         working-directory: core
         shell: bash
@@ -586,10 +577,6 @@ jobs:
           echo
           echo "PASS: binary is AArch64."
 
-
-      # ============================================================
-      # 22. INSPECT DEPENDENCIES
-      # ============================================================
       - name: Inspect binary dependencies
         working-directory: core
         shell: bash
@@ -608,10 +595,10 @@ jobs:
           readelf -A prune-android-arm64-neon \
             || true
 
+      # ------------------------------------------------------------
+      # SIMD VALIDATION
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 23. INSPECT ARM SIMD INSTRUCTIONS
-      # ============================================================
       - name: Inspect ARM NEON instructions
         working-directory: core
         shell: bash
@@ -628,10 +615,10 @@ jobs:
             | head -50 \
             || true
 
+      # ------------------------------------------------------------
+      # FINAL VALIDATION
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 24. FINAL VALIDATION
-      # ============================================================
       - name: Final validation
         working-directory: core
         shell: bash
@@ -656,18 +643,20 @@ jobs:
 
           echo
           echo "SHA256:"
+
           sha256sum \
             prune-android-arm64-neon \
             model.bin
 
           echo
           echo "File:"
+
           file prune-android-arm64-neon
 
+      # ------------------------------------------------------------
+      # PACKAGE
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # 25. PACKAGE ARTIFACT
-      # ============================================================
       - name: Package Android build
         shell: bash
         run: |
@@ -691,12 +680,9 @@ jobs:
 
           echo
           echo "Artifact contents:"
+
           ls -lah android-artifact
 
-
-      # ============================================================
-      # 26. UPLOAD
-      # ============================================================
       - name: Upload Android ARM64 NEON
         uses: actions/upload-artifact@v4
         with:
