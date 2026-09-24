@@ -128,7 +128,7 @@ override CPPFLAGS += $(myCPPFLAGS) $(NOTMAIN) $(OPT) $(ARCHCOM) $(ADDOPTION)
 override LDFLAGS += $(myLDFLAGS)
 
 all: $(MAIN) $(OBJECTS)
-	$(CXX) -m64 $(myCPPFLAGS) $(OPT) $(ARCHCOM) -o $(NAME) $(VERSIONNING) $^ $(LDFLAGS) $(MAINFLAGS)
+	$(CXX) $(myCPPFLAGS) $(OPT) $(ARCHCOM) -o $(NAME) $(VERSIONNING) $^ $(LDFLAGS) $(MAINFLAGS)
 
 download:
 	@if [ ! -f model.bin ]; then \
@@ -140,7 +140,7 @@ download:
 	fi
 
 permute: permute.cpp
-	$(CXX) -m64 $(OPT) $(ARCHCOM) -D_CRT_SECURE_NO_WARNINGS -std=gnu++17 -o permute $(VERSIONNING) permute.cpp $(LDFLAGS)
+	$(CXX) $(OPT) $(ARCHCOM) -D_CRT_SECURE_NO_WARNINGS -std=gnu++17 -o permute $(VERSIONNING) permute.cpp $(LDFLAGS)
 
 $(NETNAME): $(NEEDINGFILE)
 
@@ -148,12 +148,12 @@ model.bin: $(NETNAME) permute
 	./permute $(NETNAME).bin model.bin
 
 prune: $(MAIN) $(OBJECTS)
-	$(CXX) -m64 $(myCPPFLAGS) $(OPT) $(ARCHCOM) -o $(SHORTNAME) $^ $(VERSIONNING) $(LDFLAGS) $(MAINFLAGS)
+	$(CXX) $(myCPPFLAGS) $(OPT) $(ARCHCOM) -o $(SHORTNAME) $^ $(VERSIONNING) $(LDFLAGS) $(MAINFLAGS)
 
 -include $(DEPENDS)
 
 embeder.o: embeder.cpp $(THENET)
-	$(CXX) -m64 $(myCPPFLAGS) -O3 $(ARCHCOM) -c $(VERSIONNING) -o $@ embeder.cpp
+	$(CXX) $(myCPPFLAGS) -O3 $(ARCHCOM) -c $(VERSIONNING) -o $@ embeder.cpp
 
 clean:
 	rm -f $(OBJECTS) $(DEPENDS)

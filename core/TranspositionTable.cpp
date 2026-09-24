@@ -179,7 +179,13 @@ void transpositionTable::reinit(size_t count){
 #ifdef _WIN32
     table = (Cluster*)(_aligned_malloc(size, alignment));
 #else
-    table = (Cluster*)std::aligned_alloc(alignment, size);
+    void* ptr = nullptr;
+
+if (posix_memalign(&ptr, alignment, size) != 0) {
+    ptr = nullptr;
+}
+
+table = static_cast<Cluster*>(ptr);
 #endif
 #ifdef MADV_HUGEPAGE
     madvise(table, count*sizeof(Cluster), MADV_HUGEPAGE);
