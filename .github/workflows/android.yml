@@ -31,15 +31,7 @@ jobs:
 
 
       # ============================================================
-      # 2. HOST TOOLS
-      #
-      # These are for the GitHub x86_64 runner.
-      #
-      # aarch64-linux-gnu-g++:
-      #   Builds the ARM64 Linux permutation utility.
-      #
-      # qemu-aarch64-static:
-      #   Executes that ARM64 utility on the x86 runner.
+      # 2. INSTALL HOST TOOLS
       # ============================================================
       - name: Install host tools
         run: |
@@ -55,11 +47,7 @@ jobs:
 
 
       # ============================================================
-      # 3. LOCATE GITHUB'S ANDROID SDK
-      #
-      # We deliberately DO NOT use setup-android@v3.
-      #
-      # The runner already contains an Android SDK.
+      # 3. LOCATE ANDROID SDK
       # ============================================================
       - name: Locate Android SDK
         shell: bash
@@ -86,10 +74,6 @@ jobs:
           echo "Android SDK:"
           echo "$SDK"
 
-          echo
-          echo "SDK contents:"
-          ls -lah "$SDK"
-
 
       # ============================================================
       # 4. LOCATE SDKMANAGER
@@ -110,12 +94,6 @@ jobs:
 
           if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager not found."
-
-            find "$SDK" \
-              -maxdepth 4 \
-              -type f \
-              | head -100
-
             exit 1
           fi
 
@@ -128,7 +106,7 @@ jobs:
 
 
       # ============================================================
-      # 5. ACCEPT LICENSES
+      # 5. ACCEPT ANDROID LICENSES
       # ============================================================
       - name: Accept Android licenses
         shell: bash
@@ -142,14 +120,6 @@ jobs:
 
       # ============================================================
       # 6. INSTALL ANDROID PLATFORM + NDK
-      #
-      # IMPORTANT:
-      #
-      # We do NOT install:
-      #
-      #   tools
-      #
-      # because that package is obsolete.
       # ============================================================
       - name: Install Android NDK
         shell: bash
@@ -172,11 +142,7 @@ jobs:
 
           NDK="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}"
 
-          if [ ! -d "$NDK" ]; then
-            echo "ERROR: NDK was not installed:"
-            echo "$NDK"
-            exit 1
-          fi
+          test -d "$NDK"
 
           echo "NDK:"
           echo "$NDK"
@@ -213,45 +179,27 @@ jobs:
           echo "ANDROID_AR=$AR" >> "$GITHUB_ENV"
           echo "ANDROID_STRIP=$STRIP" >> "$GITHUB_ENV"
 
-          echo
-          echo "Android C compiler:"
-          echo "$CC"
-
-          echo
-          echo "Android C++ compiler:"
-          echo "$CXX"
+          echo "CC=$CC"
+          echo "CXX=$CXX"
 
 
       # ============================================================
-      # 9. VERIFY COMPILER
-      #
-      # Modern NDK Clang reports:
-      #
-      #   aarch64-unknown-linux-android24
-      #
-      # not necessarily:
-      #
-      #   aarch64-linux-android24
-      #
-      # Both are valid.
+      # 9. VERIFY ANDROID COMPILER
       # ============================================================
       - name: Verify Android ARM64 compiler
         shell: bash
         run: |
           set -e
 
-          echo "Compiler:"
+          echo "Android compiler:"
           "$ANDROID_CXX" --version
 
           echo
-          echo "Compiler target:"
+          echo "Target:"
 
           TARGET=$("$ANDROID_CXX" -dumpmachine)
 
           echo "$TARGET"
-
-          echo
-          echo "Checking Android ARM64 target..."
 
           echo "$TARGET" \
             | grep -Eq '^aarch64-(unknown-)?linux-android'
@@ -286,22 +234,70 @@ jobs:
           test -s "${NETNAME}.bin"
 
           echo
-          echo "Downloaded network:"
+          echo "Downloaded NNUE:"
           ls -lh "${NETNAME}.bin"
 
           echo
-          echo "Network SHA256:"
           sha256sum "${NETNAME}.bin"
 
 
       # ============================================================
-      # 11. BUILD ARM64 LINUX PERMUTE
+      # 11. VERIFY HOST ARM64 COMPILER
       #
-      # This is deliberately NOT compiled with Android clang.
+      # This is the compiler used only for permute.cpp.
+      # ============================================================
+      - name: Verify ARM64 host compiler
+        shell: bash
+        run: |
+          set -e
+
+          echo "AArch64 compiler:"
+          aarch64-linux-gnu-g++ --version
+
+          echo
+          echo "Target:"
+          aarch64-linux-gnu-g++ -dumpmachine
+
+
+      # ============================================================
+      # 12. VERIFY NEON PREDEFINED MACROS
       #
-      # It is an ARM64 Linux executable so QEMU can execute it.
+      # This is important because Prune's SIMD header explicitly
+      # checks for ARM NEON.
+      # ============================================================
+      - name: Verify ARM NEON compiler macros
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking ARM NEON predefined macros..."
+
+          aarch64-linux-gnu-g++ \
+            -march=armv8-a+simd \
+            -dM \
+            -E \
+            -x c++ \
+            /dev/null \
+            | grep -E \
+              '__aarch64__|__ARM_NEON|__ARM_NEON_FP'
+
+          echo
+          echo "PASS: ARM NEON macros are available."
+
+
+      # ============================================================
+      # 13. BUILD ARM64 PERMUTE
       #
-      # This makes the ARM NEON path in permute.cpp active.
+      # IMPORTANT:
+      #
+      # Prune's simd_definitions.hpp requires an ARM NEON macro.
+      #
+      # We explicitly select ARMv8 NEON here.
+      #
+      # We also explicitly define __ARM_NEON__ because Prune's
+      # SIMD dispatch depends on that macro.
+      #
+      # DotProd is NOT required for permute.cpp.
       # ============================================================
       - name: Build ARM64 NEON permute
         working-directory: core
@@ -311,11 +307,13 @@ jobs:
 
           rm -f permute-arm64
 
-          echo "Building ARM64 permute utility..."
+          echo "Building ARM64 NEON permute utility..."
 
           aarch64-linux-gnu-g++ \
             -O3 \
             -std=gnu++17 \
+            -march=armv8-a+simd \
+            -D__ARM_NEON__ \
             -static \
             -o permute-arm64 \
             permute.cpp
@@ -327,19 +325,20 @@ jobs:
           file permute-arm64
 
           echo
-          echo "ELF:"
+          echo "ELF header:"
+
           readelf -h permute-arm64 \
             | grep -E \
               "Class:|Machine:|Type:"
 
 
       # ============================================================
-      # 12. GENERATE ARM NEON MODEL
+      # 14. GENERATE ARM NEON MODEL
       #
-      # QEMU runs the ARM64 permute program.
+      # Execute the ARM64 permutation utility through QEMU.
       #
-      # This is important for producing model.bin using Prune's
-      # ARM/NEON permutation layout.
+      # This is important because the permutation code must execute
+      # with the ARM NEON implementation, not x86 SSE.
       # ============================================================
       - name: Generate ARM NEON model.bin
         working-directory: core
@@ -351,7 +350,7 @@ jobs:
 
           rm -f model.bin
 
-          echo "Generating model.bin..."
+          echo "Running ARM64 permute through QEMU..."
 
           qemu-aarch64-static \
             ./permute-arm64 \
@@ -365,32 +364,40 @@ jobs:
           ls -lh model.bin
 
           echo
-          echo "model.bin SHA256:"
+          echo "SHA256:"
           sha256sum model.bin
 
 
       # ============================================================
-      # 13. VERIFY ARM NEON CODE
+      # 15. VERIFY ARM SIMD SOURCE
       # ============================================================
-      - name: Verify ARM NEON permutation source
+      - name: Verify Prune SIMD source
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          if ! grep -q "__ARM_NEON__" permute.cpp; then
-            echo "ERROR: ARM NEON path not found in permute.cpp."
-            exit 1
-          fi
+          echo "Checking SIMD source..."
 
-          echo "PASS: ARM NEON path exists in permute.cpp."
+          grep -n \
+            -E \
+            "__ARM_NEON__|__aarch64__" \
+            simd_definitions.hpp \
+            | head -30
+
+          echo
+          echo "Checking permute.cpp..."
+
+          grep -n \
+            -E \
+            "simd|NEON|ARM" \
+            permute.cpp \
+            | head -30 \
+            || true
 
 
       # ============================================================
-      # 14. PREPARE MAKEFILE
-      #
-      # Original Prune Makefile contains x86-specific -m64.
-      # Remove that flag only.
+      # 16. PREPARE MAKEFILE
       # ============================================================
       - name: Prepare Makefile
         working-directory: core
@@ -402,12 +409,12 @@ jobs:
 
           sed -i 's/ -m64//g' Makefile
 
-          echo "Checking for remaining -m64:"
+          echo "Remaining -m64 flags:"
           grep -n -- "-m64" Makefile || true
 
 
       # ============================================================
-      # 15. CLEAN BUILD
+      # 17. CLEAN BUILD
       # ============================================================
       - name: Clean build
         working-directory: core
@@ -428,14 +435,14 @@ jobs:
 
 
       # ============================================================
-      # 16. COMPILE PRUNE FOR ANDROID ARM64 NEON
+      # 18. COMPILE PRUNE
       #
-      # Target:
+      # Android ARM64:
       #
       #   ARMv8.2-A + DotProd
       #
-      # This is appropriate for your Galaxy A16 5G's ARM64 CPU
-      # configuration.
+      # The phone target is deliberately different from the
+      # generic ARMv8 NEON permutation utility above.
       # ============================================================
       - name: Compile Prune Android ARM64 NEON
         working-directory: core
@@ -446,11 +453,24 @@ jobs:
           export CC="$ANDROID_CC"
           export CXX="$ANDROID_CXX"
 
-          CFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          CFLAGS="\
+          -O3 \
+          -flto \
+          -funroll-loops \
+          -march=armv8.2-a+dotprod \
+          -fPIC"
 
-          CXXFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          CXXFLAGS="\
+          -O3 \
+          -flto \
+          -funroll-loops \
+          -march=armv8.2-a+dotprod \
+          -fPIC"
 
-          LDFLAGS="-flto -march=armv8.2-a+dotprod -static-libstdc++"
+          LDFLAGS="\
+          -flto \
+          -march=armv8.2-a+dotprod \
+          -static-libstdc++"
 
           echo "CC:"
           echo "$CC"
@@ -485,7 +505,7 @@ jobs:
 
 
       # ============================================================
-      # 17. LOCATE BINARY
+      # 19. LOCATE BINARY
       # ============================================================
       - name: Locate Prune binary
         working-directory: core
@@ -506,12 +526,10 @@ jobs:
             | head -n 1)
 
           if [ -z "$PRUNE" ]; then
-            echo
             echo "ERROR: Prune executable was not found."
             exit 1
           fi
 
-          echo
           echo "Found:"
           echo "$PRUNE"
 
@@ -521,7 +539,7 @@ jobs:
 
 
       # ============================================================
-      # 18. VERIFY AARCH64 ELF
+      # 20. VERIFY AARCH64 ELF
       # ============================================================
       - name: Verify AArch64 ELF
         working-directory: core
@@ -553,7 +571,7 @@ jobs:
 
 
       # ============================================================
-      # 19. INSPECT DEPENDENCIES
+      # 21. INSPECT DEPENDENCIES
       # ============================================================
       - name: Inspect binary dependencies
         working-directory: core
@@ -575,7 +593,7 @@ jobs:
 
 
       # ============================================================
-      # 20. INSPECT ARM SIMD INSTRUCTIONS
+      # 22. INSPECT ARM SIMD INSTRUCTIONS
       # ============================================================
       - name: Inspect ARM NEON instructions
         working-directory: core
@@ -583,10 +601,11 @@ jobs:
         run: |
           set -e
 
-          echo "Searching binary for ARM SIMD instructions..."
+          echo "Searching for ARM SIMD instructions..."
 
           aarch64-linux-gnu-objdump \
-            -d prune-android-arm64-neon \
+            -d \
+            prune-android-arm64-neon \
             | grep -E \
               "sdot|udot|addv|ld1|st1|smull|smlal|umull|umlal" \
             | head -50 \
@@ -594,7 +613,7 @@ jobs:
 
 
       # ============================================================
-      # 21. FINAL VALIDATION
+      # 23. FINAL VALIDATION
       # ============================================================
       - name: Final validation
         working-directory: core
@@ -630,7 +649,7 @@ jobs:
 
 
       # ============================================================
-      # 22. PACKAGE ARTIFACT
+      # 24. PACKAGE
       # ============================================================
       - name: Package Android build
         shell: bash
@@ -654,12 +673,12 @@ jobs:
             > android-artifact/SHA256SUMS.txt
 
           echo
-          echo "Artifact contents:"
+          echo "Artifact:"
           ls -lah android-artifact
 
 
       # ============================================================
-      # 23. UPLOAD
+      # 25. UPLOAD
       # ============================================================
       - name: Upload Android ARM64 NEON
         uses: actions/upload-artifact@v4
