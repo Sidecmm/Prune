@@ -39,7 +39,7 @@ jobs:
 
 
       # ============================================================
-      # ANDROID NDK
+      # ANDROID SDK
       # ============================================================
 
       - name: Locate Android SDK
@@ -56,6 +56,10 @@ jobs:
           echo "Android SDK:"
           ls -la "$SDK"
 
+
+      # ============================================================
+      # SDKMANAGER
+      # ============================================================
 
       - name: Locate sdkmanager
         shell: bash
@@ -74,13 +78,17 @@ jobs:
           fi
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager was not found."
+            echo "ERROR: sdkmanager not found"
             exit 1
           fi
 
           echo "SDKMANAGER=$SDKMANAGER"
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
+
+      # ============================================================
+      # INSTALL NDK
+      # ============================================================
 
       - name: Install Android platform and NDK
         shell: bash
@@ -94,6 +102,10 @@ jobs:
             "platforms;android-24" \
             "ndk;27.2.12479018"
 
+
+      # ============================================================
+      # ANDROID TOOLCHAIN
+      # ============================================================
 
       - name: Configure Android toolchain
         shell: bash
@@ -121,7 +133,7 @@ jobs:
 
 
       # ============================================================
-      # VERIFY SOURCE TREE
+      # VERIFY SOURCE
       # ============================================================
 
       - name: Verify Prune source tree
@@ -137,22 +149,15 @@ jobs:
           test -f core/simd_definitions.cpp
           test -f core/simd_definitions.hpp
           test -f core/engine.cpp
+          test -f core/TranspositionTable.cpp
 
           test -f Fathom/src/tbprobe.c
 
-          echo
           echo "Prune source tree OK."
-
-          echo
-          echo "Build files:"
-          find . \
-            -maxdepth 3 \
-            -name Makefile \
-            -print
 
 
       # ============================================================
-      # REMOVE ANDROID-INCOMPATIBLE -m64
+      # PATCH -m64
       # ============================================================
 
       - name: Patch core Makefile for Android AArch64
@@ -164,8 +169,6 @@ jobs:
 
           cp Makefile Makefile.original
 
-          # The original Makefile explicitly passes -m64.
-          # AArch64 Android does not use this option.
           sed -i \
             -e 's/ -m64//g' \
             -e 's/-m64 //g' \
@@ -175,29 +178,60 @@ jobs:
           echo "Remaining -m64 references:"
           grep -n -- "-m64" Makefile || true
 
+
+      # ============================================================
+      # PATCH Android aligned_alloc
+      #
+      # Android libc++ does not expose std::aligned_alloc reliably
+      # in this configuration.
+      #
+      # Use POSIX posix_memalign instead.
+      # ============================================================
+
+      - name: Patch Android aligned allocation
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("TranspositionTable.cpp")
+          text = path.read_text()
+
+          old = "table = (Cluster*)std::aligned_alloc(alignment, size);"
+
+          new = """void* ptr = nullptr;
+
+          if (posix_memalign(&ptr, alignment, size) != 0) {
+              ptr = nullptr;
+          }
+
+          table = static_cast<Cluster*>(ptr);"""
+
+          if old not in text:
+              raise SystemExit(
+                  "ERROR: expected std::aligned_alloc line was not found"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+
+          print("Patched TranspositionTable.cpp")
+          PY
+
           echo
-          echo "Makefile architecture section:"
-          grep -n -E \
-            'ARCH|CPUSET|ARCHCOM|myCPPFLAGS|myLDFLAGS' \
-            Makefile | head -80
+          echo "Allocation code:"
+          grep -n -A10 -B5 \
+            "posix_memalign" \
+            TranspositionTable.cpp
 
 
       # ============================================================
       # HOST PERMUTER
-      #
-      # IMPORTANT:
-      #
-      # permute is only a build-time utility.
-      #
-      # We intentionally compile it for Ubuntu x86_64.
-      # We do NOT compile Android permute and execute it through QEMU.
-      #
-      # The previous QEMU failure:
-      #
-      #   Could not open '/system/bin/linker64'
-      #
-      # happened because Android binaries expect the Android dynamic
-      # linker, which is not present on the Ubuntu runner.
       # ============================================================
 
       - name: Build HOST permuter
@@ -226,14 +260,12 @@ jobs:
           echo "HOST permuter:"
           file permute
 
-          echo
-          echo "HOST architecture:"
           readelf -h permute | grep -E \
             "Class:|Machine:|Type:"
 
 
       # ============================================================
-      # DOWNLOAD NNUE NETWORK
+      # DOWNLOAD NETWORK
       # ============================================================
 
       - name: Download Prune network
@@ -261,8 +293,6 @@ jobs:
 
       # ============================================================
       # GENERATE model.bin
-      #
-      # HOST permute -> model.bin
       # ============================================================
 
       - name: Generate model.bin
@@ -276,12 +306,11 @@ jobs:
 
           rm -f model.bin
 
-          echo
           echo "Input network:"
           ls -lh "${NETNAME}.bin"
 
           echo
-          echo "Running HOST x86_64 permuter..."
+          echo "Running HOST permuter..."
 
           timeout 180 \
             ./permute \
@@ -295,8 +324,6 @@ jobs:
           echo "Generated model.bin:"
           ls -lh model.bin
 
-          file model.bin
-
 
       # ============================================================
       # VERIFY ANDROID COMPILER
@@ -307,11 +334,7 @@ jobs:
         run: |
           set -eux
 
-          echo "C compiler:"
           "$CC" --version
-
-          echo
-          echo "C++ compiler:"
           "$CXX" --version
 
           echo
@@ -326,10 +349,6 @@ jobs:
 
       # ============================================================
       # BASIC ARM64 NEON TEST
-      #
-      # Corrected:
-      # vget_low_u8() returns uint8x8_t, therefore we use
-      # vget_lane_u8(), NOT vgetq_lane_u8().
       # ============================================================
 
       - name: Test ARM64 NEON compilation
@@ -362,12 +381,8 @@ jobs:
 
           test -f simd_android_test
 
-          echo
-          echo "NEON test binary:"
           file simd_android_test
 
-          echo
-          echo "NEON test architecture:"
           readelf -h simd_android_test | grep -E \
             "Class:|Machine:|Type:"
 
@@ -408,8 +423,7 @@ jobs:
 
           test -f simd_source_test.o
 
-          echo
-          echo "Prune SIMD header successfully compiled for ARM64."
+          echo "Prune SIMD header compiled successfully."
 
           rm -f \
             simd_source_test.cpp \
@@ -417,12 +431,7 @@ jobs:
 
 
       # ============================================================
-      # CLEAN OBJECT FILES
-      #
-      # IMPORTANT:
-      #
-      # Do NOT remove model.bin.
-      # Do NOT use make -B later.
+      # CLEAN OBJECTS
       # ============================================================
 
       - name: Clean previous object files
@@ -437,13 +446,12 @@ jobs:
           test -f model.bin
           test -s model.bin
 
-          echo
           echo "model.bin preserved:"
           ls -lh model.bin
 
 
       # ============================================================
-      # BUILD ACTUAL PRUNE ENGINE
+      # BUILD PRUNE
       # ============================================================
 
       - name: Build Prune Android ARM64 NEON DotProd
@@ -464,17 +472,6 @@ jobs:
           echo "CPUSET=unknow"
           echo "========================================"
 
-          # Do NOT use -B.
-          #
-          # model.bin has already been generated using the HOST
-          # permuter. We want Make to keep that file.
-          #
-          # ARM64 compilation:
-          #   armv8.2-a + dotprod
-          #
-          # CPUSET=unknow prevents the Makefile from adding
-          # an unwanted -m<CPUSET> option.
-
           make prune \
             CC="$CC" \
             CXX="$CXX" \
@@ -487,7 +484,7 @@ jobs:
 
 
       # ============================================================
-      # VERIFY OUTPUT EXISTS
+      # VERIFY BINARY
       # ============================================================
 
       - name: Verify Prune binary
@@ -501,7 +498,7 @@ jobs:
           test -x prune
 
           echo
-          echo "Prune binary:"
+          echo "Prune:"
           ls -lh prune
 
           echo
@@ -520,8 +517,6 @@ jobs:
 
           cd core
 
-          file prune
-
           readelf -h prune > /tmp/prune-elf.txt
 
           cat /tmp/prune-elf.txt
@@ -536,7 +531,7 @@ jobs:
 
 
       # ============================================================
-      # CHECK DYNAMIC LIBRARIES
+      # CHECK DEPENDENCIES
       # ============================================================
 
       - name: Inspect dynamic dependencies
@@ -547,16 +542,17 @@ jobs:
           cd core
 
           echo "Dynamic dependencies:"
-          readelf -d prune 2>/dev/null | grep NEEDED || true
+          readelf -d prune 2>/dev/null \
+            | grep NEEDED || true
 
           echo
           echo "Interpreter:"
           readelf -l prune 2>/dev/null \
-            | grep -A1 "INTERP" || true
+            | grep -A1 INTERP || true
 
 
       # ============================================================
-      # CHECK ARM64 CODE
+      # INSPECT ARM CODE
       # ============================================================
 
       - name: Inspect ARM64 instructions
@@ -566,14 +562,12 @@ jobs:
 
           cd core
 
-          echo "ARM64 disassembly sample:"
-
+          echo "ARM64 disassembly:"
           objdump -d prune 2>/dev/null \
             | head -150 || true
 
           echo
-          echo "Searching for NEON/vector instructions:"
-
+          echo "NEON/vector instruction sample:"
           objdump -d prune 2>/dev/null \
             | grep -E \
               "fmla|fmls|fmul|fadd|fsub|addv|ld1|ld2|ld3|ld4|st1|st2|st3|st4|dup|tbl|zip|uzp|ext" \
@@ -581,10 +575,10 @@ jobs:
 
 
       # ============================================================
-      # VERIFY NETWORK EMBEDDING
+      # VERIFY MODEL
       # ============================================================
 
-      - name: Verify generated model and binary
+      - name: Verify model embedding
         shell: bash
         run: |
           set -eux
@@ -606,7 +600,7 @@ jobs:
           ls -lh prune
 
           echo
-          echo "Possible network/model strings:"
+          echo "Network/model strings:"
           strings prune \
             | grep -Ei \
               "pulsar|nnue|network|model" \
@@ -614,7 +608,7 @@ jobs:
 
 
       # ============================================================
-      # SAVE BUILD INFORMATION
+      # BUILD INFORMATION
       # ============================================================
 
       - name: Create build information
