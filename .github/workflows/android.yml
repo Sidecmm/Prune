@@ -12,30 +12,25 @@ on:
 
 jobs:
   build:
-    name: Build Prune for Android ARM64 NEON
+    name: Android ARM64 NEON
     runs-on: ubuntu-24.04
 
     env:
-      NDK_VERSION: "27.2.12479018"
       ANDROID_API: "24"
+      NDK_VERSION: "27.2.12479018"
 
     steps:
 
       # ============================================================
       # 1. Checkout
       # ============================================================
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ============================================================
-      # 2. Host tools
-      #
-      # aarch64-linux-gnu-g++ is used to build Prune's permute
-      # program as ARM64 Linux.
-      #
-      # QEMU then executes that ARM64 program on the x86 runner.
+      # 2. Install host tools
       # ============================================================
       - name: Install host tools
         run: |
@@ -50,36 +45,124 @@ jobs:
             qemu-user-static
 
       # ============================================================
-      # 3. Android SDK / NDK
+      # 3. Locate GitHub's preinstalled Android SDK
       #
-      # setup-android already installs the command-line tools.
+      # IMPORTANT:
       #
-      # DO NOT run:
+      # We deliberately do NOT use:
       #
-      #   sdkmanager tools
+      #   android-actions/setup-android
       #
-      # "tools" is an obsolete package.
+      # because the current v3 action can request the obsolete
+      # "tools" package.
       # ============================================================
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -e
+
+          if [ -d "/usr/local/lib/android/sdk" ]; then
+            SDK="/usr/local/lib/android/sdk"
+          elif [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT" ]; then
+            SDK="$ANDROID_SDK_ROOT"
+          elif [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ]; then
+            SDK="$ANDROID_HOME"
+          else
+            echo "ERROR: Android SDK was not found."
+            exit 1
+          fi
+
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+          echo "Android SDK:"
+          echo "$SDK"
+
+          echo
+          echo "SDK contents:"
+          ls -lah "$SDK"
 
       # ============================================================
-      # 4. Install only what we actually need
+      # 4. Locate sdkmanager
+      # ============================================================
+      - name: Locate sdkmanager
+        shell: bash
+        run: |
+          set -e
+
+          SDK="$ANDROID_SDK_ROOT"
+
+          SDKMANAGER=$(find "$SDK/cmdline-tools" \
+            -type f \
+            -name sdkmanager \
+            2>/dev/null \
+            | sort \
+            | tail -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            find "$SDK" -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+          echo "sdkmanager:"
+          echo "$SDKMANAGER"
+
+          "$SDKMANAGER" --version
+
+      # ============================================================
+      # 5. Accept licenses
+      # ============================================================
+      - name: Accept Android licenses
+        shell: bash
+        run: |
+          set -e
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          echo "Android SDK licenses accepted."
+
+      # ============================================================
+      # 6. Install Android platform + NDK
+      #
+      # No "tools" package.
+      # No build-tools requirement.
       # ============================================================
       - name: Install Android NDK
         shell: bash
         run: |
           set -e
 
-          yes | sdkmanager --licenses >/dev/null || true
-
-          sdkmanager \
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
 
       # ============================================================
-      # 5. Configure Android compiler
+      # 7. Verify NDK
+      # ============================================================
+      - name: Verify NDK
+        shell: bash
+        run: |
+          set -e
+
+          NDK="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}"
+
+          if [ ! -d "$NDK" ]; then
+            echo "ERROR: NDK was not installed:"
+            echo "$NDK"
+            exit 1
+          fi
+
+          echo "NDK:"
+          echo "$NDK"
+
+          ls -lah "$NDK"
+
+      # ============================================================
+      # 8. Configure Android compiler
       # ============================================================
       - name: Configure Android toolchain
         shell: bash
@@ -88,42 +171,47 @@ jobs:
 
           NDK="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}"
 
-          if [ ! -d "$NDK" ]; then
-            echo "ERROR: NDK not found:"
-            echo "$NDK"
-            exit 1
-          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-          echo "NDK:"
-          echo "$NDK"
+          CC="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+          CXX="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang++"
+          AR="$TOOLCHAIN/llvm-ar"
+          STRIP="$TOOLCHAIN/llvm-strip"
+
+          test -x "$CC"
+          test -x "$CXX"
 
           echo "ANDROID_NDK=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+          echo "ANDROID_CC=$CC" >> "$GITHUB_ENV"
+          echo "ANDROID_CXX=$CXX" >> "$GITHUB_ENV"
+          echo "ANDROID_AR=$AR" >> "$GITHUB_ENV"
+          echo "ANDROID_STRIP=$STRIP" >> "$GITHUB_ENV"
 
-          echo "ANDROID_CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
-
-          echo "ANDROID_CXX=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-
-          echo "ANDROID_AR=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
-
-          echo "ANDROID_STRIP=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" >> "$GITHUB_ENV"
+          echo "CC=$CC"
+          echo "CXX=$CXX"
 
       # ============================================================
-      # 6. Verify toolchain
+      # 9. Verify compiler
       # ============================================================
-      - name: Verify Android compiler
+      - name: Verify compiler
         run: |
           set -e
 
           "$ANDROID_CXX" --version
 
           echo
-          echo "Compiler:"
-          echo "$ANDROID_CXX"
+          echo "Target:"
+          "$ANDROID_CXX" -dumpmachine
 
-          test -x "$ANDROID_CXX"
+          echo
+          echo "Compiler target must contain aarch64-linux-android."
+
+          "$ANDROID_CXX" -dumpmachine \
+            | grep -q "aarch64-linux-android"
 
       # ============================================================
-      # 7. Download NNUE
+      # 10. Download Prune NNUE
       # ============================================================
       - name: Download NNUE
         working-directory: core
@@ -134,8 +222,8 @@ jobs:
           RELEASE=$(head -n 1 nn-name.txt)
           NETNAME=$(tail -n 1 nn-name.txt)
 
-          echo "Release = $RELEASE"
-          echo "Network = $NETNAME"
+          echo "Release: $RELEASE"
+          echo "Network: $NETNAME"
 
           curl -fL \
             -o "${NETNAME}.bin" \
@@ -143,30 +231,23 @@ jobs:
 
           test -s "${NETNAME}.bin"
 
+          echo
+          echo "Network:"
           ls -lh "${NETNAME}.bin"
 
           echo
-          echo "Network SHA256:"
           sha256sum "${NETNAME}.bin"
 
       # ============================================================
-      # 8. Build ARM64 permute utility
-      #
-      # IMPORTANT:
-      #
-      # We compile permute.cpp for ARM64 Linux, NOT x86.
-      #
-      # This makes __ARM_NEON__ active in Prune's permutation code.
+      # 11. Build ARM64 Linux permute
       # ============================================================
-      - name: Build ARM64 NEON permute
+      - name: Build ARM64 permute
         working-directory: core
         shell: bash
         run: |
           set -e
 
           rm -f permute-arm64
-
-          echo "Compiling ARM64 permute..."
 
           aarch64-linux-gnu-g++ \
             -O3 \
@@ -177,19 +258,15 @@ jobs:
 
           chmod +x permute-arm64
 
-          echo
-          echo "permute:"
+          echo "permute-arm64:"
           file permute-arm64
 
           echo
-          echo "ELF:"
-          readelf -h permute-arm64 | grep -E \
-            "Class:|Machine:|Type:"
+          readelf -h permute-arm64 \
+            | grep -E "Class:|Machine:|Type:"
 
       # ============================================================
-      # 9. Generate ARM NEON model.bin
-      #
-      # QEMU executes the ARM64 permutation program.
+      # 12. Generate ARM NEON model
       # ============================================================
       - name: Generate ARM NEON model
         working-directory: core
@@ -201,7 +278,7 @@ jobs:
 
           rm -f model.bin
 
-          echo "Generating ARM NEON model..."
+          echo "Running ARM64 permute through QEMU..."
 
           qemu-aarch64-static \
             ./permute-arm64 \
@@ -211,32 +288,27 @@ jobs:
           test -s model.bin
 
           echo
-          echo "model.bin:"
+          echo "Generated model:"
           ls -lh model.bin
 
           echo
-          echo "model SHA256:"
           sha256sum model.bin
 
       # ============================================================
-      # 10. Verify ARM permutation path exists
+      # 13. Verify ARM code exists
       # ============================================================
-      - name: Verify ARM NEON source
+      - name: Verify ARM NEON permutation
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          echo "Checking permute.cpp for ARM NEON..."
+          grep -q "__ARM_NEON__" permute.cpp
 
-          grep -n "__ARM_NEON__" permute.cpp
-
-          echo
-          echo "ARM NEON sections:"
-          grep -n -A12 -B5 "__ARM_NEON__" permute.cpp | head -80
+          echo "ARM NEON path found in permute.cpp."
 
       # ============================================================
-      # 11. Remove x86-specific -m64 from original Makefile
+      # 14. Remove x86-only Makefile option
       # ============================================================
       - name: Prepare Makefile
         working-directory: core
@@ -248,13 +320,13 @@ jobs:
 
           sed -i 's/ -m64//g' Makefile
 
-          echo "Checking for remaining -m64:"
+          echo "Checking Makefile for -m64:"
           grep -n -- "-m64" Makefile || true
 
       # ============================================================
-      # 12. Clean old objects
+      # 15. Clean
       # ============================================================
-      - name: Clean previous builds
+      - name: Clean build
         working-directory: core
         shell: bash
         run: |
@@ -270,11 +342,7 @@ jobs:
           test -s model.bin
 
       # ============================================================
-      # 13. Build Prune
-      #
-      # ARMv8.2-A + DotProd
-      #
-      # This is the target for modern ARM64 Android devices.
+      # 16. Compile Android ARM64 NEON
       # ============================================================
       - name: Compile Prune
         working-directory: core
@@ -285,11 +353,11 @@ jobs:
           export CC="$ANDROID_CC"
           export CXX="$ANDROID_CXX"
 
-          export CFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          CFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
 
-          export CXXFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          CXXFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
 
-          export LDFLAGS="-flto -march=armv8.2-a+dotprod -static-libstdc++"
+          LDFLAGS="-flto -march=armv8.2-a+dotprod -static-libstdc++"
 
           echo "CC:"
           echo "$CC"
@@ -299,33 +367,33 @@ jobs:
           echo "$CXX"
 
           echo
+          echo "CFLAGS:"
+          echo "$CFLAGS"
+
+          echo
           echo "CXXFLAGS:"
           echo "$CXXFLAGS"
 
           echo
-          echo "LDFLAGS:"
-          echo "$LDFLAGS"
-
-          echo
-          echo "Starting Prune compilation..."
+          echo "Starting Prune build..."
 
           make -B prune \
-            CC="$ANDROID_CC" \
-            CXX="$ANDROID_CXX" \
+            CC="$CC" \
+            CXX="$CXX" \
             CFLAGS="$CFLAGS" \
             CXXFLAGS="$CXXFLAGS" \
             LDFLAGS="$LDFLAGS"
 
       # ============================================================
-      # 14. Locate executable
+      # 17. Locate resulting binary
       # ============================================================
-      - name: Locate executable
+      - name: Locate binary
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          echo "Core directory:"
+          echo "Files:"
           ls -lah
 
           PRUNE=$(find . -maxdepth 1 \
@@ -338,7 +406,7 @@ jobs:
             | head -n 1)
 
           if [ -z "$PRUNE" ]; then
-            echo "ERROR: Prune executable not found."
+            echo "ERROR: No Prune executable found."
             exit 1
           fi
 
@@ -346,17 +414,16 @@ jobs:
 
           chmod +x prune-android-arm64-neon
 
-          echo "PRUNE_BINARY=$PWD/prune-android-arm64-neon" >> "$GITHUB_ENV"
-
       # ============================================================
-      # 15. Verify ELF
+      # 18. Verify AArch64
       # ============================================================
-      - name: Verify ARM64 ELF
+      - name: Verify AArch64 binary
         working-directory: core
         shell: bash
         run: |
           set -e
 
+          echo "Binary:"
           file prune-android-arm64-neon
 
           echo
@@ -370,16 +437,12 @@ jobs:
             | awk -F: '/Machine:/ {print $2}')
 
           echo
-          echo "Detected machine:"
-          echo "$MACHINE"
+          echo "Machine = $MACHINE"
 
           echo "$MACHINE" | grep -qi "AArch64"
 
-          echo
-          echo "PASS: AArch64 executable."
-
       # ============================================================
-      # 16. Inspect Android dependencies
+      # 19. Inspect dependencies
       # ============================================================
       - name: Inspect dependencies
         working-directory: core
@@ -387,7 +450,7 @@ jobs:
         run: |
           set -e
 
-          echo "Dynamic dependencies:"
+          echo "NEEDED libraries:"
 
           readelf -d prune-android-arm64-neon \
             | grep NEEDED \
@@ -400,15 +463,15 @@ jobs:
             || true
 
       # ============================================================
-      # 17. Check ARM instructions
+      # 20. Inspect ARM SIMD
       # ============================================================
-      - name: Inspect ARM SIMD instructions
+      - name: Inspect ARM SIMD
         working-directory: core
         shell: bash
         run: |
           set -e
 
-          echo "Searching for ARM SIMD / DotProd instructions..."
+          echo "ARM SIMD instructions found:"
 
           aarch64-linux-gnu-objdump \
             -d prune-android-arm64-neon \
@@ -418,7 +481,7 @@ jobs:
             || true
 
       # ============================================================
-      # 18. Final checks
+      # 21. Final validation
       # ============================================================
       - name: Final validation
         working-directory: core
@@ -430,16 +493,16 @@ jobs:
           test -s model.bin
 
           echo
-          echo "========================================"
-          echo "PRUNE ANDROID ARM64 NEON BUILD"
-          echo "========================================"
+          echo "=============================================="
+          echo " PRUNE ANDROID ARM64 NEON"
+          echo "=============================================="
 
           echo
           echo "Binary:"
           ls -lh prune-android-arm64-neon
 
           echo
-          echo "NNUE:"
+          echo "Model:"
           ls -lh model.bin
 
           echo
@@ -449,11 +512,11 @@ jobs:
             model.bin
 
           echo
-          echo "File:"
+          echo "ELF:"
           file prune-android-arm64-neon
 
       # ============================================================
-      # 19. Package artifact
+      # 22. Package
       # ============================================================
       - name: Package artifact
         shell: bash
@@ -476,16 +539,14 @@ jobs:
             android-artifact/model.bin \
             > android-artifact/SHA256SUMS.txt
 
-          echo
-          echo "Artifact:"
           ls -lah android-artifact
 
       # ============================================================
-      # 20. Upload
+      # 23. Upload
       # ============================================================
       - name: Upload Android ARM64 NEON
         uses: actions/upload-artifact@v4
         with:
           name: prune-android-arm64-neon
-          path: android-artifact
+          path: android-artifact/
           if-no-files-found: error
