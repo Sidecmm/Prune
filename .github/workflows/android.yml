@@ -87,7 +87,7 @@ jobs:
 
 
       # ============================================================
-      # INSTALL NDK
+      # INSTALL ANDROID PLATFORM + NDK
       # ============================================================
 
       - name: Install Android platform and NDK
@@ -150,6 +150,7 @@ jobs:
           test -f core/simd_definitions.hpp
           test -f core/engine.cpp
           test -f core/TranspositionTable.cpp
+          test -f core/embeder.cpp
 
           test -f Fathom/src/tbprobe.c
 
@@ -157,7 +158,7 @@ jobs:
 
 
       # ============================================================
-      # PATCH -m64
+      # PATCH Makefile
       # ============================================================
 
       - name: Patch core Makefile for Android AArch64
@@ -180,12 +181,7 @@ jobs:
 
 
       # ============================================================
-      # PATCH Android aligned_alloc
-      #
-      # Android libc++ does not expose std::aligned_alloc reliably
-      # in this configuration.
-      #
-      # Use POSIX posix_memalign instead.
+      # PATCH Android aligned allocation
       # ============================================================
 
       - name: Patch Android aligned allocation
@@ -211,27 +207,88 @@ jobs:
 
           table = static_cast<Cluster*>(ptr);"""
 
-          if old not in text:
-              raise SystemExit(
-                  "ERROR: expected std::aligned_alloc line was not found"
-              )
-
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
-
-          print("Patched TranspositionTable.cpp")
+          if old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+              print("Patched std::aligned_alloc -> posix_memalign")
+          else:
+              if "posix_memalign(&ptr" in text:
+                  print("posix_memalign patch already present")
+              else:
+                  raise SystemExit(
+                      "ERROR: expected std::aligned_alloc line was not found"
+                  )
           PY
 
           echo
-          echo "Allocation code:"
           grep -n -A10 -B5 \
             "posix_memalign" \
             TranspositionTable.cpp
 
 
       # ============================================================
-      # HOST PERMUTER
+      # PATCH AArch64 EMBEDDER ALIGNMENT
+      #
+      # x86-style:
+      #
+      #     .align 64
+      #
+      # is not valid for this ARM64 assembler in the intended sense.
+      #
+      # We need 64-byte alignment:
+      #
+      #     2^6 = 64
+      #
+      # Therefore:
+      #
+      #     .align 64
+      #
+      # becomes:
+      #
+      #     .align 6
+      # ============================================================
+
+      - name: Patch embeder ARM64 alignment
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("embeder.cpp")
+          text = path.read_text()
+
+          count = text.count(".align 64")
+
+          print(f"Found .align 64 occurrences: {count}")
+
+          if count == 0:
+              if ".align 6" in text:
+                  print("Alignment patch already applied.")
+              else:
+                  raise SystemExit(
+                      "ERROR: No '.align 64' found in embeder.cpp"
+                  )
+          else:
+              text = text.replace(".align 64", ".align 6")
+              path.write_text(text)
+              print(f"Changed {count} occurrences: .align 64 -> .align 6")
+          PY
+
+          echo
+          echo "Remaining .align 64:"
+          grep -nF ".align 64" embeder.cpp || true
+
+          echo
+          echo "ARM64 .align 6:"
+          grep -nF ".align 6" embeder.cpp || true
+
+
+      # ============================================================
+      # BUILD HOST PERMUTER
       # ============================================================
 
       - name: Build HOST permuter
@@ -502,7 +559,6 @@ jobs:
           ls -lh prune
 
           echo
-          echo "File:"
           file prune
 
 
@@ -531,7 +587,7 @@ jobs:
 
 
       # ============================================================
-      # CHECK DEPENDENCIES
+      # CHECK DYNAMIC DEPENDENCIES
       # ============================================================
 
       - name: Inspect dynamic dependencies
@@ -552,7 +608,7 @@ jobs:
 
 
       # ============================================================
-      # INSPECT ARM CODE
+      # INSPECT ARM64 CODE
       # ============================================================
 
       - name: Inspect ARM64 instructions
