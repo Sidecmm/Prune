@@ -30,6 +30,7 @@ jobs:
         with:
           fetch-depth: 0
 
+
       # ============================================================
       # HOST TOOLS
       # ============================================================
@@ -49,6 +50,10 @@ jobs:
             g++-aarch64-linux-gnu \
             qemu-user-static
 
+          echo
+          echo "Host tools installed."
+
+
       # ============================================================
       # ANDROID SDK
       # ============================================================
@@ -60,10 +65,13 @@ jobs:
 
           if [ -d "/usr/local/lib/android/sdk" ]; then
             SDK="/usr/local/lib/android/sdk"
+
           elif [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT" ]; then
             SDK="$ANDROID_SDK_ROOT"
+
           elif [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ]; then
             SDK="$ANDROID_HOME"
+
           else
             echo "ERROR: Android SDK was not found."
             exit 1
@@ -72,8 +80,10 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
 
+          echo
           echo "Android SDK:"
           echo "$SDK"
+
 
       - name: Locate sdkmanager
         shell: bash
@@ -96,10 +106,12 @@ jobs:
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
+          echo
           echo "sdkmanager:"
           echo "$SDKMANAGER"
 
           "$SDKMANAGER" --version
+
 
       - name: Accept Android licenses
         shell: bash
@@ -110,7 +122,8 @@ jobs:
 
           echo "Android licenses accepted."
 
-      - name: Install Android NDK
+
+      - name: Install Android components
         shell: bash
         run: |
           set -e
@@ -119,6 +132,14 @@ jobs:
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
+
+          echo
+          echo "Android components installed."
+
+
+      # ============================================================
+      # NDK
+      # ============================================================
 
       - name: Verify NDK
         shell: bash
@@ -129,12 +150,14 @@ jobs:
 
           test -d "$NDK"
 
-          echo "NDK:"
+          echo
+          echo "Android NDK:"
           echo "$NDK"
 
-      # ============================================================
-      # ANDROID TOOLCHAIN
-      # ============================================================
+          echo
+          echo "NDK version:"
+          cat "$NDK/source.properties"
+
 
       - name: Configure Android toolchain
         shell: bash
@@ -160,15 +183,28 @@ jobs:
           echo "ANDROID_AR=$AR" >> "$GITHUB_ENV"
           echo "ANDROID_STRIP=$STRIP" >> "$GITHUB_ENV"
 
-          echo "CC=$CC"
-          echo "CXX=$CXX"
+          echo
+          echo "CC:"
+          echo "$CC"
+
+          echo
+          echo "CXX:"
+          echo "$CXX"
+
+
+      # ============================================================
+      # VERIFY COMPILER
+      # ============================================================
 
       - name: Verify Android ARM64 compiler
         shell: bash
         run: |
           set -e
 
-          echo "Android compiler:"
+          echo "========================================"
+          echo "ANDROID COMPILER"
+          echo "========================================"
+
           "$ANDROID_CXX" --version
 
           echo
@@ -178,13 +214,35 @@ jobs:
 
           echo "$TARGET"
 
-          echo "$TARGET" | grep -Eq '^aarch64-(unknown-)?linux-android'
+          echo "$TARGET" | grep -Eq \
+            '^aarch64-(unknown-)?linux-android'
 
           echo
           echo "PASS: Android ARM64 compiler detected."
 
+
+      - name: Verify ARM64 DotProd support
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking ARM64 + DotProd compiler..."
+
+          "$ANDROID_CXX" \
+            -march=armv8.2-a+dotprod \
+            -dM \
+            -E \
+            -x c++ \
+            /dev/null \
+            | grep -E \
+              '__aarch64__|__ARM_NEON|__ARM_FEATURE_DOTPROD'
+
+          echo
+          echo "PASS: ARM64 NEON/DotProd compiler support detected."
+
+
       # ============================================================
-      # NNUE DOWNLOAD
+      # PRUNE NNUE
       # ============================================================
 
       - name: Download Prune NNUE
@@ -196,6 +254,11 @@ jobs:
           RELEASE=$(head -n 1 nn-name.txt)
           NETNAME=$(tail -n 1 nn-name.txt)
 
+          echo "========================================"
+          echo "PRUNE NETWORK"
+          echo "========================================"
+
+          echo
           echo "Release:"
           echo "$RELEASE"
 
@@ -210,50 +273,16 @@ jobs:
           test -s "${NETNAME}.bin"
 
           echo
-          echo "Downloaded NNUE:"
+          echo "Downloaded network:"
           ls -lh "${NETNAME}.bin"
 
           echo
           echo "SHA256:"
           sha256sum "${NETNAME}.bin"
 
-      # ============================================================
-      # HOST AARCH64 TOOLCHAIN
-      # ============================================================
-
-      - name: Verify ARM64 host compiler
-        shell: bash
-        run: |
-          set -e
-
-          echo "AArch64 compiler:"
-          aarch64-linux-gnu-g++ --version
-
-          echo
-          echo "Target:"
-          aarch64-linux-gnu-g++ -dumpmachine
-
-      - name: Verify ARM NEON macros
-        shell: bash
-        run: |
-          set -e
-
-          echo "Checking ARM NEON predefined macros..."
-
-          aarch64-linux-gnu-g++ \
-            -march=armv8-a+simd \
-            -dM \
-            -E \
-            -x c++ \
-            /dev/null \
-            | grep -E \
-              '__aarch64__|__ARM_NEON|__ARM_NEON_FP'
-
-          echo
-          echo "PASS: ARM NEON macros are available."
 
       # ============================================================
-      # SIMD INSPECTION
+      # INSPECT SIMD SOURCE
       # ============================================================
 
       - name: Inspect Prune SIMD definitions
@@ -262,25 +291,23 @@ jobs:
         run: |
           set -e
 
-          echo "Relevant SIMD definitions:"
+          echo "========================================"
+          echo "PRUNE SIMD DEFINITIONS"
+          echo "========================================"
 
           grep -n \
             -E \
-            "__ARM_NEON__|__aarch64__|SSE2|_simd|using simd" \
+            "__ARM_NEON__|__aarch64__|SSE2|AVX|simd" \
             simd_definitions.hpp \
-            | head -100 \
+            | head -150 \
             || true
 
+
       # ============================================================
-      # ARM64 NNUE PERMUTE
-      #
-      # IMPORTANT:
-      # The permutation utility is compiled for AArch64 and executed
-      # through QEMU. This means architecture-dependent permutation
-      # code executes as ARM NEON rather than x86_64.
+      # BUILD ARM64 PERMUTE
       # ============================================================
 
-      - name: Build ARM64 NEON permute
+      - name: Build ARM64 NEON permute utility
         working-directory: core
         shell: bash
         run: |
@@ -288,7 +315,9 @@ jobs:
 
           rm -f permute-arm64
 
-          echo "Building ARM64 NEON permute utility..."
+          echo "========================================"
+          echo "BUILDING ARM64 PERMUTE"
+          echo "========================================"
 
           aarch64-linux-gnu-g++ \
             -O3 \
@@ -307,11 +336,15 @@ jobs:
           file permute-arm64
 
           echo
-          echo "ELF header:"
-
+          echo "ELF:"
           readelf -h permute-arm64 \
             | grep -E \
               "Class:|Machine:|Type:"
+
+
+      # ============================================================
+      # GENERATE ARM MODEL
+      # ============================================================
 
       - name: Generate ARM NEON model.bin
         working-directory: core
@@ -323,7 +356,9 @@ jobs:
 
           rm -f model.bin
 
-          echo "Running ARM64 permute through QEMU..."
+          echo "========================================"
+          echo "GENERATING ARM NEON MODEL"
+          echo "========================================"
 
           qemu-aarch64-static \
             ./permute-arm64 \
@@ -333,18 +368,19 @@ jobs:
           test -s model.bin
 
           echo
-          echo "Generated ARM model.bin:"
+          echo "Generated model.bin:"
           ls -lh model.bin
 
           echo
           echo "SHA256:"
           sha256sum model.bin
 
+
       # ============================================================
-      # MAKEFILE BACKUP
+      # BACKUP MAKEFILE
       # ============================================================
 
-      - name: Backup Makefile
+      - name: Backup original Makefile
         working-directory: core
         shell: bash
         run: |
@@ -354,19 +390,23 @@ jobs:
 
           echo "Original Makefile backed up."
 
+
       # ============================================================
-      # REMOVE DIRECT X86 FLAGS
+      # REMOVE ONLY HARD-CODED x86 FLAGS
       # ============================================================
 
-      - name: Remove direct x86 architecture flags
+      - name: Remove hard-coded x86 architecture flags
         working-directory: core
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "DIRECT MAKEFILE ARCH FLAGS"
+          echo "MAKEFILE ARCHITECTURE FLAGS"
           echo "========================================"
+
+          echo
+          echo "Before modification:"
 
           grep -n \
             -E \
@@ -375,7 +415,7 @@ jobs:
             || true
 
           echo
-          echo "Removing direct x86-specific flags..."
+          echo "Removing direct hard-coded flags..."
 
           perl -0pi -e \
             's/(^|[[:space:]])-m64(?=[[:space:]]|$)/$1/g' \
@@ -386,97 +426,69 @@ jobs:
             Makefile
 
           echo
-          echo "Remaining direct -m64:"
+          echo "After modification:"
 
-          if grep -n -- "-m64" Makefile; then
-            echo "ERROR: -m64 still exists directly in Makefile."
-            exit 1
-          else
-            echo "NONE"
-          fi
-
-          echo
-          echo "Remaining direct -march=native:"
-
-          if grep -n -- "-march=native" Makefile; then
-            echo "ERROR: -march=native still exists directly in Makefile."
-            exit 1
-          else
-            echo "NONE"
-          fi
-
-      # ============================================================
-      # FIND EVERY REMAINING -march=native
-      #
-      # We deliberately search the entire source tree because the
-      # previous Makefile-only check proved that the flag is being
-      # injected elsewhere.
-      # ============================================================
-
-      - name: Find remaining native architecture flags
-        working-directory: core
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "SEARCHING ENTIRE CORE TREE"
-          echo "========================================"
-
-          echo
-
-          grep -RIn \
-            --exclude-dir=.git \
-            --exclude='*.o' \
-            --exclude='*.d' \
-            --exclude='*.bin' \
-            -- '-march=native' \
-            . \
-            || true
-
-          echo
-          echo "========================================"
-          echo "SEARCHING ALL ARCHITECTURE FLAGS"
-          echo "========================================"
-
-          grep -RIn \
-            --exclude-dir=.git \
-            --exclude='*.o' \
-            --exclude='*.d' \
-            --exclude='*.bin' \
+          grep -n \
             -E \
-            -- '-march=|-mcpu=|-m64' \
-            . \
-            | head -300 \
+            -- "-m64|-march=native" \
+            Makefile \
             || true
 
+
       # ============================================================
-      # MAKE DATABASE DIAGNOSTICS
-      #
-      # This is the key part.
-      #
-      # We inspect GNU make's expanded database rather than assuming
-      # the flag lives in Makefile.
+      # INSPECT MAKEFILE ARCH VARIABLES
       # ============================================================
 
-      - name: Inspect GNU Make variables and rules
+      - name: Inspect Prune Makefile architecture variables
         working-directory: core
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "GNU MAKE VARIABLE DATABASE"
+          echo "MAKEFILE ARCH VARIABLES"
+          echo "========================================"
+
+          grep -n \
+            -E \
+            '^[[:space:]]*(ARCH|ARCHFLAGS|CPUFLAGS|TARGET_FLAGS)[[:space:]]*[:?+]?=' \
+            Makefile \
+            || true
+
+          echo
+          echo "All architecture-related Makefile lines:"
+
+          grep -n \
+            -E \
+            'ARCH|march|mcpu|m64|native' \
+            Makefile \
+            | head -200 \
+            || true
+
+
+      # ============================================================
+      # SHOW MAKE DATABASE
+      # ============================================================
+
+      - name: Inspect GNU Make database
+        working-directory: core
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "GNU MAKE DATABASE"
           echo "========================================"
 
           make -pn \
             CC="$ANDROID_CC" \
             CXX="$ANDROID_CXX" \
+            ARCH="armv8.2-a+dotprod" \
             2>/dev/null \
             > make.database.txt
 
           echo
-          echo "Architecture-related variables:"
+          echo "Architecture variables:"
 
           grep -n \
             -E \
@@ -486,37 +498,31 @@ jobs:
             || true
 
           echo
-          echo "Every occurrence of -march=native in make database:"
+          echo "Occurrences of -march=native:"
 
           grep -n \
             -- '-march=native' \
-            make.database.txt \
-            | head -200 \
-            || true
-
-          echo
-          echo "BestMoveFinder rule from make database:"
-
-          grep -n \
-            -B8 \
-            -A12 \
-            'BestMoveFinder.o:' \
             make.database.txt \
             | head -100 \
             || true
 
           echo
-          echo "========================================"
-          echo "MAKE DATABASE CREATED"
-          echo "========================================"
+          echo "BestMoveFinder rule:"
 
-          ls -lh make.database.txt
+          grep -n \
+            -B10 \
+            -A15 \
+            'BestMoveFinder.o:' \
+            make.database.txt \
+            | head -150 \
+            || true
+
 
       # ============================================================
-      # CLEAN BUILD
+      # CLEAN
       # ============================================================
 
-      - name: Clean build
+      - name: Clean previous build
         working-directory: core
         shell: bash
         run: |
@@ -525,7 +531,11 @@ jobs:
           make clean || true
 
           find . -type f \
-            \( -name "*.o" -o -name "*.a" \) \
+            \( \
+              -name "*.o" \
+              -o -name "*.d" \
+              -o -name "*.a" \
+            \) \
             -delete
 
           rm -f prune
@@ -533,14 +543,12 @@ jobs:
 
           test -s model.bin
 
+          echo
+          echo "Clean build directory prepared."
+
+
       # ============================================================
-      # BUILD
-      #
-      # We explicitly override the common make variables.
-      #
-      # The extra MAKEFLAGS filter is defensive: if an included
-      # makefile appends -march=native to these variables, the final
-      # compiler invocation is checked below.
+      # COMPILE
       # ============================================================
 
       - name: Compile Prune Android ARM64 NEON
@@ -551,36 +559,59 @@ jobs:
 
           export CC="$ANDROID_CC"
           export CXX="$ANDROID_CXX"
+          export AR="$ANDROID_AR"
 
-          CFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          # --------------------------------------------------------
+          # IMPORTANT:
+          #
+          # Prune's Makefile uses ARCH to construct:
+          #
+          #     -march=$(ARCH)
+          #
+          # Therefore ARCH MUST NOT be empty.
+          #
+          # Previously ARCH="" produced:
+          #
+          #     -march=
+          #
+          # which caused Clang to fail.
+          # --------------------------------------------------------
 
-          CXXFLAGS="-O3 -flto -funroll-loops -march=armv8.2-a+dotprod -fPIC"
+          ARCH="armv8.2-a+dotprod"
 
+          CFLAGS="-O3 -flto -funroll-loops -fPIC"
+          CXXFLAGS="-O3 -flto -funroll-loops -fPIC"
           CPPFLAGS=""
+          LDFLAGS="-flto -static-libstdc++"
 
-          LDFLAGS="-flto -march=armv8.2-a+dotprod -static-libstdc++"
-
-          # Explicitly empty common architecture variables.
-          ARCH=""
           ARCHFLAGS=""
           CPUFLAGS=""
           TARGET_FLAGS=""
 
+          export ARCH
           export CFLAGS
           export CXXFLAGS
           export CPPFLAGS
           export LDFLAGS
-          export ARCH
           export ARCHFLAGS
           export CPUFLAGS
           export TARGET_FLAGS
 
+          echo "========================================"
+          echo "FINAL BUILD VARIABLES"
+          echo "========================================"
+
+          echo
           echo "CC:"
           echo "$CC"
 
           echo
           echo "CXX:"
           echo "$CXX"
+
+          echo
+          echo "ARCH:"
+          echo "$ARCH"
 
           echo
           echo "CFLAGS:"
@@ -595,45 +626,6 @@ jobs:
           echo "$LDFLAGS"
 
           echo
-          echo "ARCH:"
-          echo "$ARCH"
-
-          echo
-          echo "ARCHFLAGS:"
-          echo "$ARCHFLAGS"
-
-          echo
-          echo "CPUFLAGS:"
-          echo "$CPUFLAGS"
-
-          echo
-          echo "TARGET_FLAGS:"
-          echo "$TARGET_FLAGS"
-
-          echo
-          echo "========================================"
-          echo "FINAL SOURCE CHECK"
-          echo "========================================"
-
-          if grep -RIn \
-            --exclude-dir=.git \
-            --exclude='*.o' \
-            --exclude='*.d' \
-            --exclude='*.bin' \
-            -- '-march=native' \
-            .; then
-
-            echo
-            echo "WARNING:"
-            echo "-march=native still exists somewhere in source."
-
-          else
-
-            echo "No -march=native found in source."
-
-          fi
-
-          echo
           echo "========================================"
           echo "STARTING PRUNE COMPILATION"
           echo "========================================"
@@ -641,14 +633,16 @@ jobs:
           make -B prune \
             CC="$CC" \
             CXX="$CXX" \
+            AR="$AR" \
+            ARCH="$ARCH" \
             CFLAGS="$CFLAGS" \
             CXXFLAGS="$CXXFLAGS" \
             CPPFLAGS="$CPPFLAGS" \
             LDFLAGS="$LDFLAGS" \
-            ARCH="$ARCH" \
             ARCHFLAGS="$ARCHFLAGS" \
             CPUFLAGS="$CPUFLAGS" \
             TARGET_FLAGS="$TARGET_FLAGS"
+
 
       # ============================================================
       # LOCATE BINARY
@@ -660,10 +654,14 @@ jobs:
         run: |
           set -e
 
-          echo "Core directory:"
+          echo "========================================"
+          echo "LOCATING PRUNE BINARY"
+          echo "========================================"
+
           ls -lah
 
-          PRUNE=$(find . -maxdepth 1 \
+          PRUNE=$(find . \
+            -maxdepth 1 \
             -type f \
             -name "prune*" \
             ! -name "*.o" \
@@ -685,8 +683,9 @@ jobs:
 
           chmod +x prune-android-arm64-neon
 
+
       # ============================================================
-      # ELF VALIDATION
+      # VERIFY ELF
       # ============================================================
 
       - name: Verify AArch64 ELF
@@ -695,7 +694,10 @@ jobs:
         run: |
           set -e
 
-          echo "Binary:"
+          echo "========================================"
+          echo "AARCH64 ELF VERIFICATION"
+          echo "========================================"
+
           file prune-android-arm64-neon
 
           echo
@@ -717,8 +719,9 @@ jobs:
           echo
           echo "PASS: binary is AArch64."
 
+
       # ============================================================
-      # DEPENDENCY VALIDATION
+      # CHECK ANDROID LIBRARIES
       # ============================================================
 
       - name: Inspect binary dependencies
@@ -727,7 +730,9 @@ jobs:
         run: |
           set -e
 
-          echo "Dynamic dependencies:"
+          echo "========================================"
+          echo "DYNAMIC DEPENDENCIES"
+          echo "========================================"
 
           readelf -d prune-android-arm64-neon \
             | grep NEEDED \
@@ -739,8 +744,9 @@ jobs:
           readelf -A prune-android-arm64-neon \
             || true
 
+
       # ============================================================
-      # NEON / DOTPROD INSPECTION
+      # CHECK NEON / DOTPROD INSTRUCTIONS
       # ============================================================
 
       - name: Inspect ARM SIMD instructions
@@ -749,7 +755,9 @@ jobs:
         run: |
           set -e
 
-          echo "Searching for ARM SIMD instructions..."
+          echo "========================================"
+          echo "ARM SIMD INSTRUCTIONS"
+          echo "========================================"
 
           aarch64-linux-gnu-objdump \
             -d \
@@ -758,6 +766,7 @@ jobs:
               "sdot|udot|addv|ld1|st1|smull|smlal|umull|umlal" \
             | head -100 \
             || true
+
 
       # ============================================================
       # FINAL VALIDATION
@@ -797,6 +806,7 @@ jobs:
 
           file prune-android-arm64-neon
 
+
       # ============================================================
       # PACKAGE
       # ============================================================
@@ -808,19 +818,24 @@ jobs:
 
           mkdir -p android-artifact
 
-          cp core/prune-android-arm64-neon \
+          cp \
+            core/prune-android-arm64-neon \
             android-artifact/
 
-          cp core/model.bin \
+          cp \
+            core/model.bin \
             android-artifact/
 
-          cp core/nn-name.txt \
+          cp \
+            core/nn-name.txt \
             android-artifact/
 
-          cp core/make.database.txt \
+          cp \
+            core/make.database.txt \
             android-artifact/
 
-          cp core/Makefile.android.original \
+          cp \
+            core/Makefile.android.original \
             android-artifact/
 
           sha256sum \
@@ -829,9 +844,16 @@ jobs:
             > android-artifact/SHA256SUMS.txt
 
           echo
-          echo "Artifact contents:"
+          echo "========================================"
+          echo "ARTIFACT CONTENTS"
+          echo "========================================"
 
           ls -lah android-artifact
+
+
+      # ============================================================
+      # UPLOAD
+      # ============================================================
 
       - name: Upload Android ARM64 NEON
         uses: actions/upload-artifact@v4
