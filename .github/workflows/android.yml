@@ -1,0 +1,766 @@
+name: Prune Android ARM64 NEON
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ============================================================
+      # 2. DEPENDENCIES
+      # ============================================================
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -eux
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang \
+            lld \
+            make \
+            python3 \
+            curl \
+            unzip \
+            file \
+            binutils
+
+      # ============================================================
+      # 3. ANDROID SDK / NDK
+      # ============================================================
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -eux
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+
+          echo "SDK_ROOT=$SDK_ROOT"
+
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+            -type f \
+            -name sdkmanager \
+            2>/dev/null | head -n 1 || true)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT" \
+              -type f \
+              -name sdkmanager \
+              2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found"
+            exit 1
+          fi
+
+          echo "Using sdkmanager:"
+          echo "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-24" \
+            "ndk;27.2.12479018"
+
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 4. VERIFY SOURCE
+      # ============================================================
+      - name: Verify Prune source
+        shell: bash
+        run: |
+          set -eux
+
+          test -f core/Makefile
+          test -f core/nn-name.txt
+          test -f core/simd_definitions.cpp
+          test -f core/simd_definitions.hpp
+          test -f core/permute.cpp
+          test -f core/embeder.cpp
+          test -f core/TranspositionTable.cpp
+
+          echo
+          echo "=================================================="
+          echo "PRUNE SOURCE"
+          echo "=================================================="
+
+          echo "core/Makefile              OK"
+          echo "core/nn-name.txt           OK"
+          echo "core/simd_definitions.cpp  OK"
+          echo "core/simd_definitions.hpp  OK"
+          echo "core/permute.cpp           OK"
+          echo "core/embeder.cpp           OK"
+          echo "core/TranspositionTable.cpp OK"
+
+          echo
+          echo "Network configuration:"
+          cat core/nn-name.txt
+
+      # ============================================================
+      # 5. PATCH MAKEFILE
+      #
+      # Prune's Makefile hardcodes -m64 in several commands.
+      # That is not valid for AArch64.
+      # ============================================================
+      - name: Patch Makefile for ARM64
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("Makefile")
+          text = path.read_text()
+
+          count = text.count(" -m64")
+
+          print(f"Found hardcoded -m64 occurrences: {count}")
+
+          if count:
+              text = text.replace(" -m64", "")
+              path.write_text(text)
+              print(f"Removed {count} hardcoded -m64 occurrences.")
+          else:
+              print("No hardcoded -m64 found.")
+          PY
+
+          echo
+          echo "Remaining -m64:"
+          grep -nF -- "-m64" Makefile || true
+
+      # ============================================================
+      # 6. PATCH TRANSPOSITION TABLE ALLOCATION
+      #
+      # Android libc++/API compatibility:
+      # replace std::aligned_alloc with posix_memalign.
+      # ============================================================
+      - name: Patch Android aligned allocation
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("TranspositionTable.cpp")
+          text = path.read_text()
+
+          old = "table = (Cluster*)std::aligned_alloc(alignment, size);"
+
+          new = """void* ptr = nullptr;
+
+          if (posix_memalign(&ptr, alignment, size) != 0) {
+              ptr = nullptr;
+          }
+
+          table = static_cast<Cluster*>(ptr);"""
+
+          if old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+              print("Patched std::aligned_alloc -> posix_memalign")
+
+          elif "posix_memalign(&ptr" in text:
+              print("posix_memalign patch already present.")
+
+          else:
+              print("WARNING: expected std::aligned_alloc line not found.")
+              print("No allocation patch applied.")
+          PY
+
+      # ============================================================
+      # 7. PATCH EMBEDER INLINE ASSEMBLY
+      #
+      # IMPORTANT:
+      #
+      # The compiler error showed:
+      #
+      #   <inline asm>:4:8  .align 64
+      #   <inline asm>:10:8 .align 64
+      #   <inline asm>:16:8 .align 64
+      #   <inline asm>:22:8 .align 64
+      #
+      # These directives are inside C++ inline-assembly strings.
+      #
+      # AArch64 .align uses the exponent:
+      #
+      #   .align 6 = 2^6 = 64-byte alignment
+      #
+      # Therefore we preserve the intended 64-byte alignment while
+      # changing the assembler syntax.
+      # ============================================================
+      - name: Patch embeder inline assembly alignment
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("embeder.cpp")
+          text = path.read_text()
+
+          old = ".align 64"
+          new = ".align 6"
+
+          count = text.count(old)
+
+          echo_count = count
+
+          print(f"Occurrences of '.align 64': {count}")
+
+          if count > 0:
+              text = text.replace(old, new)
+              path.write_text(text)
+
+              print(
+                  f"Changed {count} occurrence(s): "
+                  ".align 64 -> .align 6"
+              )
+
+          elif new in text:
+              print("'.align 6' is already present.")
+
+          else:
+              raise SystemExit(
+                  "ERROR: Neither '.align 64' nor '.align 6' "
+                  "was found in embeder.cpp."
+              )
+          PY
+
+          echo
+          echo "=================================================="
+          echo "VERIFY EMBEDDER PATCH"
+          echo "=================================================="
+
+          echo "Remaining .align 64:"
+          grep -nF ".align 64" embeder.cpp || true
+
+          echo
+          echo "ARM64 .align 6:"
+          grep -nF ".align 6" embeder.cpp || true
+
+          if grep -qF ".align 64" embeder.cpp; then
+              echo
+              echo "ERROR: .align 64 still exists!"
+              exit 1
+          fi
+
+          echo
+          echo "Alignment patch verified."
+
+      # ============================================================
+      # 8. SHOW SOURCE DIFF
+      # ============================================================
+      - name: Show source patches
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=================================================="
+          echo "GIT DIFF"
+          echo "=================================================="
+
+          git diff -- \
+            core/Makefile \
+            core/TranspositionTable.cpp \
+            core/embeder.cpp \
+            || true
+
+      # ============================================================
+      # 9. AUTO COMMIT + PUSH SOURCE PATCHES
+      #
+      # Push BEFORE compilation.
+      #
+      # This means the ARM64 fixes are preserved even when the
+      # subsequent build fails.
+      #
+      # [skip ci] prevents the automatic commit from starting
+      # another workflow.
+      # ============================================================
+      - name: Commit and push source patches
+        shell: bash
+        run: |
+          set -eux
+
+          echo "=================================================="
+          echo "REPOSITORY STATUS"
+          echo "=================================================="
+
+          git status --short
+
+          if [ -z "$(git status --porcelain)" ]; then
+              echo "No source changes to commit."
+              exit 0
+          fi
+
+          git config user.name \
+            "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            core/Makefile \
+            core/TranspositionTable.cpp \
+            core/embeder.cpp
+
+          if git diff --cached --quiet; then
+              echo "No tracked source changes."
+              exit 0
+          fi
+
+          echo
+          echo "=================================================="
+          echo "STAGED PATCH"
+          echo "=================================================="
+
+          git diff --cached
+
+          git commit \
+            -m "Auto-patch Prune for Android ARM64 [skip ci]"
+
+          git push
+
+          echo
+          echo "=================================================="
+          echo "SOURCE PATCHES PUSHED SUCCESSFULLY"
+          echo "=================================================="
+
+      # ============================================================
+      # 10. BUILD HOST PERMUTER
+      #
+      # The permuter is a host BUILD utility.
+      #
+      # It must be x86_64 because GitHub Actions is running Linux
+      # x86_64 and we execute it here.
+      # ============================================================
+      - name: Build host permuter
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          clang++ \
+            -std=gnu++17 \
+            -O3 \
+            -march=native \
+            -flto \
+            -funroll-loops \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -I. \
+            permute.cpp \
+            -o permute
+
+          echo
+          echo "Host permuter:"
+          file permute
+
+      # ============================================================
+      # 11. READ NETWORK INFORMATION
+      #
+      # nn-name.txt:
+      #
+      # line 1 = release tag
+      # line 2 = network name
+      #
+      # This follows Prune's own Makefile logic.
+      # ============================================================
+      - name: Read Prune network information
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          RELEASE_TAG="$(head -n 1 nn-name.txt | tr -d '\r\n')"
+          NETNAME="$(tail -n 1 nn-name.txt | tr -d '\r\n')"
+
+          test -n "$RELEASE_TAG"
+          test -n "$NETNAME"
+
+          echo "Release tag:"
+          echo "$RELEASE_TAG"
+
+          echo "Network name:"
+          echo "$NETNAME"
+
+          echo "PRUNE_RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "PRUNE_NETNAME=$NETNAME" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 12. DOWNLOAD NETWORK
+      # ============================================================
+      - name: Download Prune network
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          URL="https://github.com/tgirolami09/Prune-nets/releases/download/${PRUNE_RELEASE_TAG}/${PRUNE_NETNAME}.bin"
+
+          echo
+          echo "Downloading:"
+          echo "$URL"
+
+          curl \
+            -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 3 \
+            -o "${PRUNE_NETNAME}.bin" \
+            "$URL"
+
+          test -s "${PRUNE_NETNAME}.bin"
+
+          echo
+          echo "Network downloaded:"
+          ls -lh "${PRUNE_NETNAME}.bin"
+
+          echo
+          echo "Network SHA256:"
+          sha256sum "${PRUNE_NETNAME}.bin"
+
+      # ============================================================
+      # 13. GENERATE MODEL.BIN
+      #
+      # Use the HOST permuter.
+      #
+      # Do NOT execute an Android ARM64 permuter on the GitHub
+      # runner. That was the source of the previous linker/QEMU issue.
+      # ============================================================
+      - name: Generate model.bin
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          rm -f model.bin
+
+          ./permute \
+            "${PRUNE_NETNAME}.bin" \
+            model.bin
+
+          test -s model.bin
+
+          echo
+          echo "Generated model.bin:"
+          ls -lh model.bin
+
+          echo
+          echo "model.bin SHA256:"
+          sha256sum model.bin
+
+      # ============================================================
+      # 14. CONFIGURE ANDROID COMPILER
+      # ============================================================
+      - name: Configure Android ARM64 compiler
+        shell: bash
+        run: |
+          set -eux
+
+          TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          export CC="$TOOLCHAIN/aarch64-linux-android24-clang"
+          export CXX="$TOOLCHAIN/aarch64-linux-android24-clang++"
+
+          test -x "$CC"
+          test -x "$CXX"
+
+          echo "CC=$CC"
+          echo "CXX=$CXX"
+
+          "$CXX" --version
+
+          echo "CC=$CC" >> "$GITHUB_ENV"
+          echo "CXX=$CXX" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 15. ARM64 NEON SMOKE TEST
+      # ============================================================
+      - name: Test ARM64 NEON compiler
+        shell: bash
+        run: |
+          set -eux
+
+          cat > /tmp/neon_test.cpp <<'CPP'
+          #include <arm_neon.h>
+
+          int main() {
+              uint8x16_t a = vdupq_n_u8(1);
+              uint8x16_t b = vdupq_n_u8(2);
+              uint8x16_t c = vaddq_u8(a, b);
+
+              return vget_lane_u8(
+                  vget_low_u8(c),
+                  0
+              ) == 3 ? 0 : 1;
+          }
+          CPP
+
+          "$CXX" \
+            -march=armv8.2-a+dotprod \
+            -D__ARM_NEON__ \
+            -flax-vector-conversions \
+            /tmp/neon_test.cpp \
+            -o /tmp/neon_test
+
+          echo
+          echo "NEON test binary:"
+          file /tmp/neon_test
+
+          echo
+          echo "ELF:"
+          readelf -h /tmp/neon_test | grep -E \
+            'Class:|Machine:|OS/ABI:|Type:'
+
+      # ============================================================
+      # 16. PRUNE SIMD HEADER TEST
+      # ============================================================
+      - name: Test Prune SIMD headers
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          cat > /tmp/prune_simd_test.cpp <<'CPP'
+          #include "simd_definitions.hpp"
+
+          int main() {
+              return 0;
+          }
+          CPP
+
+          "$CXX" \
+            -std=gnu++17 \
+            -O3 \
+            -march=armv8.2-a+dotprod \
+            -D__ARM_NEON__ \
+            -flax-vector-conversions \
+            -I. \
+            -I../Fathom/src \
+            -c \
+            /tmp/prune_simd_test.cpp \
+            -o /tmp/prune_simd_test.o
+
+          echo
+          echo "Prune ARM/NEON SIMD header compiled successfully."
+
+      # ============================================================
+      # 17. CLEAN OLD BUILD
+      #
+      # Preserve model.bin and downloaded network.
+      # ============================================================
+      - name: Clean old build objects
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          make clean || true
+
+          rm -f prune
+          rm -f *.o
+          rm -f *.d
+
+          test -s model.bin
+
+      # ============================================================
+      # 18. BUILD PRUNE
+      #
+      # ARMv8.2-A + DotProd.
+      #
+      # CPUSET must remain "unknow" because the Makefile otherwise
+      # adds -m$(CPUSET).
+      # ============================================================
+      - name: Build Prune Android ARM64 NEON DotProd
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          export CC="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          export CXX="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
+
+          make prune \
+            ARCH="armv8.2-a+dotprod" \
+            CPUSET="unknow" \
+            ADDOPTION="-D__ARM_NEON__ -flax-vector-conversions"
+
+      # ============================================================
+      # 19. VERIFY FINAL ELF
+      # ============================================================
+      - name: Verify Android ELF
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          test -x prune
+
+          echo
+          echo "=================================================="
+          echo "FINAL BINARY"
+          echo "=================================================="
+
+          file prune
+
+          echo
+          echo "=================================================="
+          echo "ELF HEADER"
+          echo "=================================================="
+
+          readelf -h prune | grep -E \
+            'Class:|Machine:|OS/ABI:|Type:'
+
+          echo
+          echo "=================================================="
+          echo "DYNAMIC DEPENDENCIES"
+          echo "=================================================="
+
+          readelf -d prune | grep NEEDED || true
+
+      # ============================================================
+      # 20. CHECK ARM64 SIMD INSTRUCTIONS
+      # ============================================================
+      - name: Inspect ARM64 SIMD instructions
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          llvm-objdump -d prune > /tmp/prune.disasm
+
+          echo
+          echo "Searching for ARM NEON / DotProd instructions..."
+
+          grep -Ei \
+            'sdot|udot|fmla|fmls|umlal|umlsl|cnt|tbl|zip|uzp|ext|ld1|st1' \
+            /tmp/prune.disasm \
+            | head -n 100 \
+            || true
+
+      # ============================================================
+      # 21. VERIFY NETWORK ARTIFACTS
+      # ============================================================
+      - name: Verify network artifacts
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          echo
+          echo "=================================================="
+          echo "FINAL BINARY"
+          echo "=================================================="
+
+          ls -lh prune
+
+          echo
+          echo "=================================================="
+          echo "ORIGINAL NETWORK"
+          echo "=================================================="
+
+          ls -lh "${PRUNE_NETNAME}.bin"
+
+          echo
+          echo "=================================================="
+          echo "PERMUTED MODEL"
+          echo "=================================================="
+
+          ls -lh model.bin
+
+          echo
+          echo "=================================================="
+          echo "BINARY STRINGS"
+          echo "=================================================="
+
+          strings prune | grep -Ei \
+            'pulsar|model|nnue|network|prune' \
+            | head -n 100 \
+            || true
+
+      # ============================================================
+      # 22. SHA256
+      # ============================================================
+      - name: Generate final checksum
+        shell: bash
+        run: |
+          set -eux
+
+          cd core
+
+          sha256sum prune
+
+      # ============================================================
+      # 23. PACKAGE ARTIFACT
+      # ============================================================
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p artifact
+
+          cp \
+            core/prune \
+            artifact/prune-android-arm64-neon-dotprod
+
+          chmod +x \
+            artifact/prune-android-arm64-neon-dotprod
+
+          echo
+          echo "Artifact:"
+          file artifact/prune-android-arm64-neon-dotprod
+
+          echo
+          echo "Artifact SHA256:"
+          sha256sum artifact/prune-android-arm64-neon-dotprod
+
+      # ============================================================
+      # 24. UPLOAD ARTIFACT
+      # ============================================================
+      - name: Upload Android binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: prune-android-arm64-neon-dotprod
+          path: artifact/prune-android-arm64-neon-dotprod
